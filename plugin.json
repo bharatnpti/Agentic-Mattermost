@@ -30,6 +30,22 @@
                 "placeholder": "",
                 "default": "",
                 "secret": true
+            },
+            {
+                "key": "OpenAIModel",
+                "display_name": "OpenAI Model",
+                "type": "text",
+                "help_text": "Specify the OpenAI model to use (e.g., gpt-3.5-turbo, gpt-4).",
+                "placeholder": "gpt-3.5-turbo",
+                "default": "gpt-3.5-turbo"
+            },
+            {
+                "key": "Tasks",
+                "display_name": "Maestro Task Definitions (JSON)",
+                "type": "longtext",
+                "help_text": "Define AI tasks as a JSON map where keys are task names and values are prompt templates. Use {{.Messages}} as a placeholder for concatenated chat messages. Example: {\"summarize_chat\": \"Summarize this conversation: {{.Messages}}\"}",
+                "placeholder": "{\n  \"summarize_chat\": \"Summarize this conversation: {{.Messages}}\",\n  \"extract_actions\": \"Extract action items from this discussion: {{.Messages}}\"\n}",
+                "default": "{\n  \"summarize_thread\": \"Summarize the key points of the following thread: {{.Messages}}\",\n  \"extract_actions\": \"Extract action items from this discussion: {{.Messages}}\"\n}"
             }
         ]
     }

@@ -9,6 +9,8 @@ import (
 	"github.com/mattermost/mattermost-plugin-starter-template/server/store/kvstore"
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
+	"encoding/json" // Added for JSON parsing
+
 	"github.com/mattermost/mattermost/server/public/pluginapi"
 	"github.com/mattermost/mattermost/server/public/pluginapi/cluster"
 	"github.com/pkg/errors"
@@ -73,6 +75,12 @@ func (p *Plugin) OnActivate() error {
 		GetOpenAIAPIKey: func() string {
 			return p.getConfiguration().OpenAIAPIKey
 		},
+		GetOpenAIModel: func() string { // Added GetOpenAIModel
+			return p.getConfiguration().OpenAIModel
+		},
+		GetOpenAITasks: func() map[string]string { // Added GetOpenAITasks
+			return p.getConfiguration().ParsedTasks
+		},
 		CallOpenAIFunc: CallOpenAIAPIFunc, // This is the global var from main package
 		OpenAIAPIURL:  OpenAIAPIURL,     // This is the global var from main package
 	}
@@ -126,4 +134,31 @@ func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
 	// All OpenAI related logic including API key checks, CallOpenAIAPIFunc,
 	// and p.API.CreatePost for the response have been removed as per the subtask.
 	// The function now only logs the incoming message details.
+}
+
+// OnConfigurationChange is invoked when configuration changes may have been made.
+func (p *Plugin) OnConfigurationChange() error {
+	var newConfiguration = new(configuration)
+
+	// Load the public configuration fields from the Mattermost server configuration.
+	if err := p.API.LoadPluginConfiguration(newConfiguration); err != nil {
+		return errors.Wrap(err, "failed to load plugin configuration")
+	}
+
+	// Parse the Tasks JSON string into the ParsedTasks map
+	if newConfiguration.Tasks != "" {
+		var parsedMap map[string]string
+		if err := json.Unmarshal([]byte(newConfiguration.Tasks), &parsedMap); err != nil {
+			p.API.LogError("Failed to parse Tasks JSON string from configuration.", "error", err.Error(), "tasks_string", newConfiguration.Tasks)
+			newConfiguration.ParsedTasks = make(map[string]string) // Use empty map on error
+		} else {
+			newConfiguration.ParsedTasks = parsedMap
+		}
+	} else {
+		newConfiguration.ParsedTasks = make(map[string]string) // Initialize if Tasks string is empty
+	}
+
+	p.setConfiguration(newConfiguration)
+
+	return nil
 }

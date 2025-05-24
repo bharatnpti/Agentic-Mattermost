@@ -139,36 +139,59 @@ export MM_ADMIN_TOKEN=j44acwd8obn78cdcx7koid4jkr
 make deploy
 ```
 
-## OpenAI Integration
+## Maestro AI Integration
 
-This plugin leverages the power of OpenAI's language models to provide intelligent responses. To interact with OpenAI, you can use the `/openai` slash command.
+This plugin uses Maestro to execute configured AI tasks with context from chat messages. You can interact with Maestro using the `/maestro` slash command.
 
 ### Usage
 
-To send a prompt to OpenAI, type the following command and press Enter:
+To execute an AI task with Maestro, type the following command and press Enter:
 ```
-/openai <your prompt here>
+/maestro <task_name> <num_messages>
 ```
-For example:
+*   `<task_name>`: This must match one of the task names you define in the "Maestro Task Definitions (JSON)" setting in the plugin configuration (see below).
+*   `<num_messages>`: This specifies how many recent messages from the current channel should be fetched and provided as context to the AI for the task. It must be a positive integer.
+
+For example, if you have a task named `summarize_conversation` defined in your configuration, you can run:
 ```
-/openai What is the weather like in Paris?
+/maestro summarize_conversation 15
 ```
-The plugin will then send your prompt to OpenAI, and the model's response will be posted back to the channel by the plugin bot.
+This command will fetch the last 15 messages from the current channel and use them, along with the prompt template defined for `summarize_conversation`, to generate a response from the AI. The result will be posted back to the channel by the plugin bot.
 
 ### Configuration
 
-To enable OpenAI integration, you must configure the OpenAI API Key:
+To enable and customize AI task execution, the following settings must be configured in the System Console under **Plugins > [Your Plugin's Display Name]** (e.g., "Maestro" or "Agentic Mattermost"):
 
-1.  **Obtain an OpenAI API Key**:
-    *   If you don't already have one, you'll need to create an account and generate an API key from OpenAI.
-    *   You can find more information and generate your key at [https://platform.openai.com/account/api-keys](https://platform.openai.com/account/api-keys).
+1.  **OpenAI API Key** (Required):
+    *   This is your secret API key from OpenAI. It is essential for the plugin to communicate with the OpenAI API.
+    *   You can obtain an API key from [https://platform.openai.com/account/api-keys](https://platform.openai.com/account/api-keys).
+    *   Without a valid API key, the plugin will not be able to execute AI tasks.
 
-2.  **Set the API Key in Mattermost**:
-    *   Go to **System Console > Plugins > OpenAI Plugin** (the name might vary based on your `plugin.json`'s `name` field, e.g., "Agentic Mattermost").
-    *   Find the "OpenAI API Key" setting.
-    *   Paste your API key into the field and save the configuration.
+2.  **OpenAI Model** (Optional, has default):
+    *   Specify the OpenAI model to use for generating responses (e.g., `gpt-3.5-turbo`, `gpt-4`, `gpt-4-turbo-preview`).
+    *   If left blank or the specified model is invalid, the plugin defaults to `gpt-3.5-turbo`.
 
-Without a valid API key, the plugin will not be able to communicate with OpenAI and will log an error.
+3.  **Maestro Task Definitions (JSON)** (Required for functionality):
+    *   This setting allows you to define custom AI tasks that users can invoke with the `/maestro` command.
+    *   It must be a valid JSON object where:
+        *   Each **key** is a unique `task_name` (e.g., "summarize_chat", "extract_actions", "brainstorm_ideas"). This `task_name` is what users will type in the `/maestro` command.
+        *   Each **value** is a string representing the prompt template for that task.
+    *   **Crucially, within each prompt template, you *must* include the `{{.Messages}}` placeholder.** This placeholder will be automatically replaced by the plugin with the concatenated content of the fetched chat messages.
+    *   Example JSON:
+        ```json
+        {
+          "summarize_chat": "Please provide a concise summary of the following conversation, highlighting key decisions and action items:\n\n{{.Messages}}",
+          "extract_actions": "From the discussion below, list all specific action items, who is assigned to them (if mentioned), and any deadlines:\n\n{{.Messages}}",
+          "brainstorm_solutions": "Given this problem description, brainstorm three potential solutions:\n\n{{.Messages}}"
+        }
+        ```
+    *   If a `task_name` used in the `/maestro` command is not found in this configuration, users will receive an error. If the JSON is malformed, parsing errors will be logged by the plugin.
+
+To enable AI task execution, you must configure the OpenAI API Key (as Maestro currently uses OpenAI as its backend):
+
+<!-- The detailed steps for obtaining and setting API key were integrated into the list above -->
+
+Without a valid API key, the plugin will not be able to execute AI tasks and will log an error. If task definitions are missing or malformed, specific tasks may not work.
 
 ### Releasing new versions
 

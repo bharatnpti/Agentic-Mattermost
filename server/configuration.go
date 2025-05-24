@@ -2,8 +2,7 @@ package main
 
 import (
 	"reflect"
-
-	"github.com/pkg/errors"
+	// "github.com/pkg/errors" // Removed unused import
 )
 
 // configuration captures the plugin's external configuration as exposed in the Mattermost server
@@ -19,12 +18,23 @@ import (
 // copy appropriate for your types.
 type configuration struct {
 	OpenAIAPIKey string
+	OpenAIModel  string // Added field for OpenAI Model
+	Tasks        string // Raw JSON string from plugin settings (key "Tasks")
+
+	ParsedTasks map[string]string `json:"-"` // Parsed task-prompt map, ignored by direct unmarshalling
 }
 
 // Clone shallow copies the configuration. Your implementation may require a deep copy if
-// your configuration has reference types.
+// your configuration has reference types. Also, ensure ParsedTasks is properly cloned.
 func (c *configuration) Clone() *configuration {
 	var clone = *c
+	// Deep copy ParsedTasks if it's not nil
+	if c.ParsedTasks != nil {
+		clone.ParsedTasks = make(map[string]string)
+		for key, value := range c.ParsedTasks {
+			clone.ParsedTasks[key] = value
+		}
+	}
 	return &clone
 }
 
@@ -36,7 +46,8 @@ func (p *Plugin) getConfiguration() *configuration {
 	defer p.configurationLock.RUnlock()
 
 	if p.configuration == nil {
-		return &configuration{}
+		// Initialize with an empty ParsedTasks map if configuration is nil
+		return &configuration{ParsedTasks: make(map[string]string)}
 	}
 
 	return p.configuration
@@ -67,18 +78,4 @@ func (p *Plugin) setConfiguration(configuration *configuration) {
 	}
 
 	p.configuration = configuration
-}
-
-// OnConfigurationChange is invoked when configuration changes may have been made.
-func (p *Plugin) OnConfigurationChange() error {
-	var configuration = new(configuration)
-
-	// Load the public configuration fields from the Mattermost server configuration.
-	if err := p.API.LoadPluginConfiguration(configuration); err != nil {
-		return errors.Wrap(err, "failed to load plugin configuration")
-	}
-
-	p.setConfiguration(configuration)
-
-	return nil
 }

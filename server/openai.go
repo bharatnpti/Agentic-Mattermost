@@ -35,10 +35,10 @@ const OpenAIAPIURL = "https://api.openai.com/v1/chat/completions"
 
 // CallOpenAIAPIFunc is a function variable that can be replaced for testing.
 // It makes a request to the OpenAI API and returns the response.
-// It takes an apiURL parameter to allow for testing with mock servers.
-var CallOpenAIAPIFunc = func(apiKey string, message string, apiURL string) (string, error) {
+// It now takes apiURL and modelName parameters.
+var CallOpenAIAPIFunc = func(apiKey string, modelName string, message string, apiURL string) (string, error) {
 	requestBody := OpenAIRequest{
-		Model: "gpt-3.5-turbo",
+		Model: modelName, // Use the modelName parameter
 		Messages: []OpenAIMessage{
 			{
 				Role:    "user",

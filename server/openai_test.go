@@ -12,6 +12,8 @@ import (
 )
 
 func TestCallOpenAIAPI(t *testing.T) {
+	testModelName := "test-model-123" // Define a model name for testing
+
 	t.Run("successful API response", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, "POST", r.Method)
@@ -21,7 +23,7 @@ func TestCallOpenAIAPI(t *testing.T) {
 			var reqBody OpenAIRequest
 			err := json.NewDecoder(r.Body).Decode(&reqBody)
 			require.NoError(t, err)
-			assert.Equal(t, "gpt-3.5-turbo", reqBody.Model)
+			assert.Equal(t, testModelName, reqBody.Model) // Verify model name in request
 			require.Len(t, reqBody.Messages, 1)
 			assert.Equal(t, "user", reqBody.Messages[0].Role)
 			assert.Equal(t, "Hello", reqBody.Messages[0].Content)
@@ -43,20 +45,21 @@ func TestCallOpenAIAPI(t *testing.T) {
 		}))
 		defer server.Close()
 
-		response, err := CallOpenAIAPIFunc("test-api-key", "Hello", server.URL)
+		response, err := CallOpenAIAPIFunc("test-api-key", testModelName, "Hello", server.URL) // Pass model name
 		require.NoError(t, err)
 		assert.Equal(t, "Hi there!", response)
 	})
 
 	t.Run("API error response", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Optionally, verify request body model here too if the API might behave differently based on model for errors
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte(`{"error": {"message": "Invalid API key"}}`))
 		}))
 		defer server.Close()
 
-		response, err := CallOpenAIAPIFunc("invalid-api-key", "Hello", server.URL)
+		response, err := CallOpenAIAPIFunc("invalid-api-key", testModelName, "Hello", server.URL) // Pass model name
 		require.Error(t, err)
 		assert.Empty(t, response)
 		assert.Contains(t, err.Error(), "API request failed with status 401")
@@ -71,7 +74,7 @@ func TestCallOpenAIAPI(t *testing.T) {
 		}))
 		defer server.Close()
 
-		response, err := CallOpenAIAPIFunc("test-api-key", "Hello", server.URL)
+		response, err := CallOpenAIAPIFunc("test-api-key", testModelName, "Hello", server.URL) // Pass model name
 		require.Error(t, err)
 		assert.Empty(t, response)
 		assert.Contains(t, err.Error(), "failed to unmarshal response body")
@@ -89,7 +92,7 @@ func TestCallOpenAIAPI(t *testing.T) {
 		}))
 		defer server.Close()
 
-		response, err := CallOpenAIAPIFunc("test-api-key", "Hello", server.URL)
+		response, err := CallOpenAIAPIFunc("test-api-key", testModelName, "Hello", server.URL) // Pass model name
 		require.Error(t, err)
 		assert.Empty(t, response)
 		assert.EqualError(t, err, "no response text found or choices array is empty")
@@ -101,7 +104,7 @@ func TestCallOpenAIAPI(t *testing.T) {
 		}))
 		defer server.Close()
 
-		response, err := CallOpenAIAPIFunc("test-api-key", "Hello", server.URL)
+		response, err := CallOpenAIAPIFunc("test-api-key", testModelName, "Hello", server.URL) // Pass model name
 		require.Error(t, err)
 		assert.Empty(t, response)
 		if !strings.Contains(err.Error(), "failed to read response body") && !strings.Contains(err.Error(), "unexpected EOF") {
