@@ -2,7 +2,7 @@ package command
 
 import (
 	"fmt"
-	"strconv"
+	_ "strconv"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -14,10 +14,10 @@ import (
 type HandlerDependencies struct {
 	API             plugin.API
 	BotUserID       string
-	GetOpenAIAPIKey func() string // Kept for now, in case other commands might use it
-	CallOpenAIFunc  func(apiKey string, message string, apiURL string) (string, error) // Kept for now
-	OpenAIAPIURL    string // Kept for now
-	ParseArguments func(argsString string) (taskName string, numMessages int, err error) // Kept for now
+	GetOpenAIAPIKey func() string                                                         // Kept for now, in case other commands might use it
+	CallOpenAIFunc  func(apiKey string, message string, apiURL string) (string, error)    // Kept for now
+	OpenAIAPIURL    string                                                                // Kept for now
+	ParseArguments  func(argsString string) (taskName string, numMessages int, err error) // Kept for now
 }
 
 const DefaultNumMessages = 10 // Exported for use in plugin.go
@@ -34,6 +34,7 @@ type Command interface {
 }
 
 const helloCommandTrigger = "hello"
+
 // const openaiCommandTrigger = "maestro" // Removed
 
 func NewCommandHandler(deps HandlerDependencies) Command {
