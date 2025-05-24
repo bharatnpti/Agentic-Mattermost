@@ -1,7 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -187,14 +190,13 @@ func (p *Plugin) parseMaestroArgs(argsString string) (taskName string, numMessag
 			return "", 0, fmt.Errorf("not enough arguments. Usage: !maestro <task_name> [-n <num_messages>]")
 		}
 	}
-	
+
 	if argsString == "summarize" && len(fields) == 0 { // Edge case: "!maestro summarize"
 		return "summarize", command.DefaultNumMessages, nil
 	}
 	if len(fields) == 0 { // Should be caught above, but as a safeguard
-		return "",0, fmt.Errorf("task_name cannot be empty. Usage: !maestro <task_name> [-n <num_messages>]")
+		return "", 0, fmt.Errorf("task_name cannot be empty. Usage: !maestro <task_name> [-n <num_messages>]")
 	}
-
 
 	numMessages = command.DefaultNumMessages // Default value
 	taskNameParts := []string{}
@@ -233,10 +235,10 @@ func (p *Plugin) parseMaestroArgs(argsString string) (taskName string, numMessag
 	}
 
 	if len(taskNameParts) == 0 {
-         // This case can be hit if only "-n" "10" is provided, which is invalid.
-         if argsString == "summarize" { // "!maestro summarize" is valid and handled earlier.
-             return "summarize", numMessages, nil // If -n was parsed for summarize
-         }
+		// This case can be hit if only "-n" "10" is provided, which is invalid.
+		if argsString == "summarize" { // "!maestro summarize" is valid and handled earlier.
+			return "summarize", numMessages, nil // If -n was parsed for summarize
+		}
 		return "", 0, fmt.Errorf("task_name cannot be empty. Usage: !maestro <task_name> [-n <num_messages>]")
 	}
 	taskName = strings.Join(taskNameParts, " ")
@@ -328,7 +330,6 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 		ChannelId: channelID,
 		Message:   openAIResponse,
 		RootId:    rootID, // Thread the response to the !maestro message
-		ParentId:  rootID, // Also set ParentId for threading
 	}
 
 	if _, appErr := p.API.CreatePost(responsePost); appErr != nil {
