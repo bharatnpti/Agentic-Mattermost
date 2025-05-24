@@ -11,13 +11,12 @@ import (
 
 // HandlerDependencies defines the dependencies needed by the command Handler from the main plugin.
 type HandlerDependencies struct {
-	API           plugin.API
-	BotUserID     string
+	API             plugin.API
+	BotUserID       string
 	GetOpenAIAPIKey func() string
-	CallOpenAIFunc func(apiKey string, message string, apiURL string) (string, error)
-	OpenAIAPIURL  string
+	CallOpenAIFunc  func(apiKey string, message string, apiURL string) (string, error)
+	OpenAIAPIURL    string
 }
-
 
 type Handler struct {
 	dependencies HandlerDependencies
@@ -30,7 +29,7 @@ type Command interface {
 }
 
 const helloCommandTrigger = "hello"
-const openaiCommandTrigger = "openai"
+const openaiCommandTrigger = "maestro"
 
 func NewCommandHandler(deps HandlerDependencies) Command {
 	if err := deps.API.RegisterCommand(&model.Command{
@@ -78,6 +77,9 @@ func (h *Handler) Handle(args *model.CommandArgs) (*model.CommandResponse, error
 }
 
 func (h *Handler) executeHelloCommand(args *model.CommandArgs) *model.CommandResponse {
+
+	//h.dependencies.API.LogInfo("executing: executeHelloCommand with " + args.UserId + ", command: " + args.Command + ", channel: " + args.ChannelId)
+
 	if len(strings.Fields(args.Command)) < 2 {
 		return &model.CommandResponse{
 			ResponseType: model.CommandResponseTypeEphemeral,
@@ -97,11 +99,11 @@ func (h *Handler) executeOpenAICommand(args *model.CommandArgs) (*model.CommandR
 	if prompt == "" {
 		h.dependencies.API.SendEphemeralPost(args.UserId, &model.Post{
 			ChannelId: args.ChannelId,
-			Message:   "Please provide a prompt after the `/openai` command.",
+			Message:   "Please provide a prompt after the `/maestro` command.",
 		})
 		return &model.CommandResponse{}, nil
 	}
-	
+
 	apiKey := h.dependencies.GetOpenAIAPIKey()
 
 	if apiKey == "" {

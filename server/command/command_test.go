@@ -68,7 +68,6 @@ func TestOpenAICommand(t *testing.T) {
 		}
 		defer func() { mockCallOpenAIFuncGlobal = nil }()
 
-
 		deps := HandlerDependencies{
 			API:             mockAPI,
 			BotUserID:       testBotUserIDGlobal,
@@ -78,7 +77,7 @@ func TestOpenAICommand(t *testing.T) {
 		}
 		handler := NewCommandHandler(deps)
 		args := *baseArgs // copy
-		args.Command = "/openai tell me a joke"
+		args.Command = "/maestro tell me a joke"
 
 		mockAPI.On("CreatePost", mock.MatchedBy(func(post *model.Post) bool {
 			return post.UserId == testBotUserIDGlobal &&
@@ -94,24 +93,23 @@ func TestOpenAICommand(t *testing.T) {
 	t.Run("TestEmptyPrompt", func(t *testing.T) {
 		mockAPI := &plugintest.API{}
 		mockAPI.On("RegisterCommand", mock.AnythingOfType("*model.Command")).Return(nil).Times(2)
-		
+
 		mockCallOpenAIFuncGlobal = func(apiKey, message, apiURL string) (string, error) {
 			t.Errorf("CallOpenAIFunc should not be called for empty prompt")
 			return "", errors.New("should not be called")
 		}
 		defer func() { mockCallOpenAIFuncGlobal = nil }()
 
-
 		deps := HandlerDependencies{
 			API:             mockAPI,
-			BotUserID:       testBotUserIDGlobal, // Not strictly needed but good to have
+			BotUserID:       testBotUserIDGlobal,                     // Not strictly needed but good to have
 			GetOpenAIAPIKey: func() string { return "test-api-key" }, // Should not be called
 			CallOpenAIFunc:  func(apiKey, msg, url string) (string, error) { return mockCallOpenAIFuncGlobal(apiKey, msg, url) },
 			OpenAIAPIURL:    testOpenAIAPIURLGlobal,
 		}
 		handler := NewCommandHandler(deps)
 		args := *baseArgs // copy
-		args.Command = "/openai "
+		args.Command = "/maestro "
 
 		mockAPI.On("SendEphemeralPost", args.UserId, mock.MatchedBy(func(post *model.Post) bool {
 			return post.ChannelId == args.ChannelId &&
@@ -142,7 +140,7 @@ func TestOpenAICommand(t *testing.T) {
 		}
 		handler := NewCommandHandler(deps)
 		args := *baseArgs // copy
-		args.Command = "/openai tell me a joke"
+		args.Command = "/maestro tell me a joke"
 
 		mockAPI.On("SendEphemeralPost", args.UserId, mock.MatchedBy(func(post *model.Post) bool {
 			return post.ChannelId == args.ChannelId &&
@@ -164,7 +162,6 @@ func TestOpenAICommand(t *testing.T) {
 		}
 		defer func() { mockCallOpenAIFuncGlobal = nil }()
 
-
 		deps := HandlerDependencies{
 			API:             mockAPI,
 			BotUserID:       testBotUserIDGlobal,
@@ -174,7 +171,7 @@ func TestOpenAICommand(t *testing.T) {
 		}
 		handler := NewCommandHandler(deps)
 		args := *baseArgs // copy
-		args.Command = "/openai tell me a joke"
+		args.Command = "/maestro tell me a joke"
 
 		mockAPI.On("LogError", "Error calling OpenAI API for slash command", "error", mockError.Error()).Once()
 		mockAPI.On("SendEphemeralPost", args.UserId, mock.MatchedBy(func(post *model.Post) bool {
@@ -197,7 +194,6 @@ func TestOpenAICommand(t *testing.T) {
 		}
 		defer func() { mockCallOpenAIFuncGlobal = nil }()
 
-
 		deps := HandlerDependencies{
 			API:             mockAPI,
 			BotUserID:       testBotUserIDGlobal,
@@ -207,7 +203,7 @@ func TestOpenAICommand(t *testing.T) {
 		}
 		handler := NewCommandHandler(deps)
 		args := *baseArgs // copy
-		args.Command = "/openai tell me a joke"
+		args.Command = "/maestro tell me a joke"
 
 		mockAppError := model.NewAppError("CreatePost", "id", nil, "failed to create post", http.StatusInternalServerError)
 		mockAPI.On("CreatePost", mock.MatchedBy(func(post *model.Post) bool {

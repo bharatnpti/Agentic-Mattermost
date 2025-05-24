@@ -45,9 +45,9 @@ func (p *Plugin) OnActivate() error {
 	p.client = pluginapi.NewClient(p.API, p.Driver)
 
 	bot := &model.Bot{
-		Username:    "openai_bot",
-		DisplayName: "OpenAI Bot",
-		Description: "Bot for OpenAI integration.",
+		Username:    "maestro",
+		DisplayName: "maestro",
+		Description: "Bot for Agentic Capabilities.",
 	}
 	// Use p.client.Bot.EnsureBot (or p.API.EnsureBot if available in the specific Mattermost version)
 	// For pluginapi.Client, it's typically p.client.Bot.EnsureBot
@@ -68,13 +68,13 @@ func (p *Plugin) OnActivate() error {
 
 	// Construct HandlerDependencies
 	dependencies := command.HandlerDependencies{
-		API:           p.API,
-		BotUserID:     p.botUserID,
+		API:       p.API,
+		BotUserID: p.botUserID,
 		GetOpenAIAPIKey: func() string {
 			return p.getConfiguration().OpenAIAPIKey
 		},
 		CallOpenAIFunc: CallOpenAIAPIFunc, // This is the global var from main package
-		OpenAIAPIURL:  OpenAIAPIURL,     // This is the global var from main package
+		OpenAIAPIURL:   OpenAIAPIURL,      // This is the global var from main package
 	}
 	p.commandClient = command.NewCommandHandler(dependencies)
 

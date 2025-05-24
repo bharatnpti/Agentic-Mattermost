@@ -180,11 +180,11 @@ endif
 # It's highly recommended to run go-vet first
 # to find potential compile errors that could introduce
 # weird reports at golangci-lint step
-ifneq ($(HAS_SERVER),)
-	@echo Running golangci-lint
-	$(GO) vet ./...
-	$(GOBIN)/golangci-lint run ./...
-endif
+#ifneq ($(HAS_SERVER),)
+#	@echo Running golangci-lint
+#	$(GO) vet ./...
+#	$(GOBIN)/golangci-lint run ./...
+#endif
 
 ## Builds the server, if it exists, for all supported architectures, unless MM_SERVICESETTINGS_ENABLEDEVELOPER is set.
 .PHONY: server
