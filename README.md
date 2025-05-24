@@ -139,6 +139,25 @@ export MM_ADMIN_TOKEN=j44acwd8obn78cdcx7koid4jkr
 make deploy
 ```
 
+## OpenAI Integration
+
+This plugin leverages the power of OpenAI's language models to provide intelligent responses to messages. When a message is posted in a channel where the plugin is active, it will be sent to OpenAI, and the model's response will be posted back to the channel by the plugin bot.
+
+### Configuration
+
+To enable OpenAI integration, you must configure the OpenAI API Key:
+
+1.  **Obtain an OpenAI API Key**:
+    *   If you don't already have one, you'll need to create an account and generate an API key from OpenAI.
+    *   You can find more information and generate your key at [https://platform.openai.com/account/api-keys](https://platform.openai.com/account/api-keys).
+
+2.  **Set the API Key in Mattermost**:
+    *   Go to **System Console > Plugins > OpenAI Plugin** (the name might vary based on your `plugin.json`'s `name` field, e.g., "Agentic Mattermost").
+    *   Find the "OpenAI API Key" setting.
+    *   Paste your API key into the field and save the configuration.
+
+Without a valid API key, the plugin will not be able to communicate with OpenAI and will log an error.
+
 ### Releasing new versions
 
 The version of a plugin is determined at compile time, automatically populating a `version` field in the [plugin manifest](plugin.json):

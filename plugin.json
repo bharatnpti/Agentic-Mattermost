@@ -21,6 +21,16 @@
     "settings_schema": {
         "header": "",
         "footer": "",
-        "settings": []
+        "settings": [
+            {
+                "key": "OpenAIAPIKey",
+                "display_name": "OpenAI API Key",
+                "type": "text",
+                "help_text": "The API key for OpenAI, required for the plugin to function.",
+                "placeholder": "",
+                "default": "",
+                "secret": true
+            }
+        ]
     }
 }

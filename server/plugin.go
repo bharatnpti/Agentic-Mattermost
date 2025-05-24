@@ -35,11 +35,34 @@ type Plugin struct {
 	// configuration is the active plugin configuration. Consult getConfiguration and
 	// setConfiguration for usage.
 	configuration *configuration
+
+	// botUserID is the user ID of the plugin's bot account.
+	botUserID string
 }
 
 // OnActivate is invoked when the plugin is activated. If an error is returned, the plugin will be deactivated.
 func (p *Plugin) OnActivate() error {
 	p.client = pluginapi.NewClient(p.API, p.Driver)
+
+	bot := &model.Bot{
+		Username:    "openai_bot",
+		DisplayName: "OpenAI Bot",
+		Description: "Bot for OpenAI integration.",
+	}
+	// Use p.client.Bot.EnsureBot (or p.API.EnsureBot if available in the specific Mattermost version)
+	// For pluginapi.Client, it's typically p.client.Bot.EnsureBot
+	// However, EnsureBot is also often exposed via p.API.EnsureBot in newer versions.
+	// Let's try p.API.EnsureBot first as it's simpler and often preferred if available.
+	// If that fails, we can try p.client.Bot.EnsureBot.
+	// Based on common plugin patterns, p.API.EnsureBot is the direct way if using plugin.API helpers.
+	// The pluginapi.Client is more for remote plugin execution.
+	// Let's use p.client.Bot.EnsureBot() as p.API.EnsureBot and p.API.Helpers.EnsureBot failed.
+	// The p.client is pluginapi.NewClient(p.API, p.Driver)
+	botUserID, err := p.client.Bot.EnsureBot(bot)
+	if err != nil {
+		return errors.Wrap(err, "failed to ensure bot account using p.client.Bot.EnsureBot")
+	}
+	p.botUserID = botUserID
 
 	p.kvstore = kvstore.NewKVStore(p.client)
 
@@ -80,3 +103,39 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 }
 
 // See https://developers.mattermost.com/extend/plugins/server/reference/
+
+// MessageHasBeenPosted is invoked when a message is posted to a channel.
+func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
+	// Ignore posts made by the bot itself
+	if post.UserId == p.botUserID {
+		return
+	}
+
+	p.API.LogInfo("MessageHasBeenPosted hook triggered", "user", post.UserId, "message", post.Message)
+
+	config := p.getConfiguration()
+	if config.OpenAIAPIKey == "" {
+		p.API.LogError("OpenAI API Key is not configured.")
+		// Optionally, send a message back to the user or channel if appropriate
+		// For now, just log and return.
+		return
+	}
+
+	openAIResponse, err := CallOpenAIAPIFunc(config.OpenAIAPIKey, post.Message, OpenAIAPIURL)
+	if err != nil {
+		p.API.LogError("Error calling OpenAI API", "error", err.Error())
+		return
+	}
+
+	p.API.LogInfo("OpenAI API response", "response", openAIResponse)
+
+	newPost := &model.Post{
+		UserId:    p.botUserID,
+		ChannelId: post.ChannelId,
+		Message:   openAIResponse,
+	}
+
+	if _, appErr := p.API.CreatePost(newPost); appErr != nil {
+		p.API.LogError("Failed to create post", "error", appErr.Error())
+	}
+}
