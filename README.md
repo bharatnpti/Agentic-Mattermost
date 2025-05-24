@@ -141,7 +141,19 @@ make deploy
 
 ## OpenAI Integration
 
-This plugin leverages the power of OpenAI's language models to provide intelligent responses to messages. When a message is posted in a channel where the plugin is active, it will be sent to OpenAI, and the model's response will be posted back to the channel by the plugin bot.
+This plugin leverages the power of OpenAI's language models to provide intelligent responses. To interact with OpenAI, you can use the `/openai` slash command.
+
+### Usage
+
+To send a prompt to OpenAI, type the following command and press Enter:
+```
+/openai <your prompt here>
+```
+For example:
+```
+/openai What is the weather like in Paris?
+```
+The plugin will then send your prompt to OpenAI, and the model's response will be posted back to the channel by the plugin bot.
 
 ### Configuration
 

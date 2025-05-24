@@ -66,7 +66,17 @@ func (p *Plugin) OnActivate() error {
 
 	p.kvstore = kvstore.NewKVStore(p.client)
 
-	p.commandClient = command.NewCommandHandler(p.client)
+	// Construct HandlerDependencies
+	dependencies := command.HandlerDependencies{
+		API:           p.API,
+		BotUserID:     p.botUserID,
+		GetOpenAIAPIKey: func() string {
+			return p.getConfiguration().OpenAIAPIKey
+		},
+		CallOpenAIFunc: CallOpenAIAPIFunc, // This is the global var from main package
+		OpenAIAPIURL:  OpenAIAPIURL,     // This is the global var from main package
+	}
+	p.commandClient = command.NewCommandHandler(dependencies)
 
 	job, err := cluster.Schedule(
 		p.API,
@@ -111,31 +121,9 @@ func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
 		return
 	}
 
-	p.API.LogInfo("MessageHasBeenPosted hook triggered", "user", post.UserId, "message", post.Message)
+	p.API.LogInfo("MessageHasBeenPosted hook triggered (OpenAI call removed)", "user_id", post.UserId, "message", post.Message, "channel_id", post.ChannelId)
 
-	config := p.getConfiguration()
-	if config.OpenAIAPIKey == "" {
-		p.API.LogError("OpenAI API Key is not configured.")
-		// Optionally, send a message back to the user or channel if appropriate
-		// For now, just log and return.
-		return
-	}
-
-	openAIResponse, err := CallOpenAIAPIFunc(config.OpenAIAPIKey, post.Message, OpenAIAPIURL)
-	if err != nil {
-		p.API.LogError("Error calling OpenAI API", "error", err.Error())
-		return
-	}
-
-	p.API.LogInfo("OpenAI API response", "response", openAIResponse)
-
-	newPost := &model.Post{
-		UserId:    p.botUserID,
-		ChannelId: post.ChannelId,
-		Message:   openAIResponse,
-	}
-
-	if _, appErr := p.API.CreatePost(newPost); appErr != nil {
-		p.API.LogError("Failed to create post", "error", appErr.Error())
-	}
+	// All OpenAI related logic including API key checks, CallOpenAIAPIFunc,
+	// and p.API.CreatePost for the response have been removed as per the subtask.
+	// The function now only logs the incoming message details.
 }

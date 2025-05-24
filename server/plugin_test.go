@@ -1,8 +1,7 @@
 package main
 
 import (
-	"errors" // Import for creating specific errors
-	"testing"
+	"testing" // "errors" import removed as it's unused after test cleanup
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
@@ -29,81 +28,44 @@ func TestMessageHasBeenPosted(t *testing.T) {
 	}
 
 	// Restore original function after each test in this suite
-	defer func() { CallOpenAIAPIFunc = originalCallOpenAIAPIFunc }()
-
-	t.Run("TestSuccessfulResponse", func(t *testing.T) {
-		p, api := setupPlugin(t, "test-api-key")
-		defer api.AssertExpectations(t)
-
-		post := &model.Post{UserId: "testuserid", ChannelId: "testchannelid", Message: "Hello OpenAI"}
-		expectedResponse := "OpenAI says hello!"
-
-		CallOpenAIAPIFunc = func(apiKey, message, apiURL string) (string, error) {
-			assert.Equal(t, "test-api-key", apiKey)
-			assert.Equal(t, "Hello OpenAI", message)
-			assert.Equal(t, OpenAIAPIURL, apiURL)
-			return expectedResponse, nil
-		}
-
-		api.On("LogInfo", "MessageHasBeenPosted hook triggered", "user", post.UserId, "message", post.Message).Times(1)
-		api.On("LogInfo", "OpenAI API response", "response", expectedResponse).Times(1)
-		api.On("CreatePost", mock.MatchedBy(func(newPost *model.Post) bool {
-			return newPost.UserId == botUserID &&
-				newPost.ChannelId == post.ChannelId &&
-				newPost.Message == expectedResponse
-		})).Return(nil, nil).Times(1) // Return (nil, nil) for (*model.Post, *model.AppError)
-
-		p.MessageHasBeenPosted(&plugin.Context{}, post)
-	})
+	defer func() { CallOpenAIAPIFunc = originalCallOpenAIAPIFunc }() // Restore original function
 
 	t.Run("TestBotMessageIgnored", func(t *testing.T) {
-		p, _ := setupPlugin(t, "test-api-key") // API mock not strictly needed here but setup is harmless
+		p, api := setupPlugin(t, "test-api-key") // API key doesn't matter here
+		defer api.AssertExpectations(t)
 
 		post := &model.Post{UserId: botUserID, ChannelId: "testchannelid", Message: "I am a bot"}
 
-		CallOpenAIAPIFunc = func(apiKey, message, apiURL string) (string, error) {
-			t.Error("CallOpenAIAPIFunc should not be called for bot messages")
-			return "", errors.New("should not be called")
-		}
+		// CallOpenAIAPIFunc should not be involved at all.
+		// LogInfo for the message details should NOT be called if it's a bot message.
+		// No LogError or CreatePost should be called.
 
 		p.MessageHasBeenPosted(&plugin.Context{}, post)
-		// No calls to LogInfo, LogError, CreatePost are expected beyond initial trigger if any.
-		// Assertions are implicitly checked by AssertExpectations if any unexpected mock calls were made to api.
+		// No mocks should be called, asserted by AssertExpectations.
 	})
 
-	t.Run("TestAPIKeyMissing", func(t *testing.T) {
-		p, api := setupPlugin(t, "") // API Key is empty
+	t.Run("TestRegularMessageIsLogged", func(t *testing.T) {
+		p, api := setupPlugin(t, "test-api-key") // API key doesn't matter here
 		defer api.AssertExpectations(t)
+		
+		post := &model.Post{UserId: "regularUserID", ChannelId: "testchannelid", Message: "A regular message"}
 
-		post := &model.Post{UserId: "testuserid", ChannelId: "testchannelid", Message: "Hello OpenAI"}
-
-		api.On("LogInfo", "MessageHasBeenPosted hook triggered", "user", post.UserId, "message", post.Message).Times(1)
-		api.On("LogError", "OpenAI API Key is not configured.").Times(1)
-
-		CallOpenAIAPIFunc = func(apiKey, message, apiURL string) (string, error) {
-			t.Error("CallOpenAIAPIFunc should not be called when API key is missing")
-			return "", errors.New("should not be called")
-		}
-
-		p.MessageHasBeenPosted(&plugin.Context{}, post)
-	})
-
-	t.Run("TestOpenAICallFailure", func(t *testing.T) {
-		p, api := setupPlugin(t, "test-api-key")
-		defer api.AssertExpectations(t)
-
-		post := &model.Post{UserId: "testuserid", ChannelId: "testchannelid", Message: "Hello OpenAI"}
-		simulatedError := errors.New("simulated OpenAI API error")
-
-		CallOpenAIAPIFunc = func(apiKey, message, apiURL string) (string, error) {
-			return "", simulatedError
-		}
-
-		api.On("LogInfo", "MessageHasBeenPosted hook triggered", "user", post.UserId, "message", post.Message).Times(1)
-		api.On("LogError", "Error calling OpenAI API", "error", simulatedError.Error()).Times(1)
+		// Expect LogInfo to be called with the message details
+		api.On("LogInfo", 
+			"MessageHasBeenPosted hook triggered (OpenAI call removed)", 
+			"user_id", post.UserId, 
+			"message", post.Message, 
+			"channel_id", post.ChannelId,
+		).Times(1)
+		
+		// CallOpenAIAPIFunc should not be involved.
+		// No LogError or CreatePost should be called.
 
 		p.MessageHasBeenPosted(&plugin.Context{}, post)
 	})
+
+	// TestSuccessfulResponse, TestAPIKeyMissing, TestOpenAICallFailure are removed
+	// as MessageHasBeenPosted no longer handles OpenAI calls directly.
 }
 
 func TestConfigurationLoading(t *testing.T) {
