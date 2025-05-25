@@ -116,6 +116,285 @@ func (p *Plugin) OnDeactivate() error {
 	return nil
 }
 
+// FindUser retrieves a user by their ID using the plugin API.
+func (p *Plugin) FindUser(userID string) (*model.User, error) {
+	user, appErr := p.API.GetUser(userID)
+	if appErr != nil {
+		// Wrap the AppError from Mattermost API for more context.
+		return nil, errors.Wrapf(appErr, "failed to get user with id: %s", userID)
+	}
+	return user, nil
+}
+
+// MessageUser sends a direct message from the bot to the specified user.
+func (p *Plugin) MessageUser(userID, message string) error {
+	// Ensure botUserID is available
+	if p.botUserID == "" {
+		return errors.New("MessageUser: botUserID is not set")
+	}
+	if userID == "" {
+		return errors.New("MessageUser: userID cannot be empty")
+	}
+	if message == "" {
+		return errors.New("MessageUser: message cannot be empty")
+	}
+
+	// Create a direct channel between the bot and the target user.
+	// The order of user IDs for channel creation usually doesn't matter for direct channels.
+	channel, appErr := p.API.GetDirectChannel(p.botUserID, userID)
+	if appErr != nil {
+		// If channel not found, try to create it.
+		// Note: Some Mattermost versions might create the channel automatically with GetDirectChannel if it doesn't exist,
+		// or GetOrCreateDirectChannel might be available. Assuming GetDirectChannel and then CreateDirectChannel if needed.
+		// For simplicity, let's assume GetDirectChannel is the primary way and if it fails, we might need to create one.
+		// However, p.API.CreateDirectChannel is more explicit for creation.
+		// Let's use p.API.CreateDirectChannel as it's more direct for this intent.
+		// It requires the list of user IDs for the channel. For a DM, it's bot and target user.
+		// Correction: CreateDirectChannel expects two user IDs to form a DM channel.
+		// The API call should be p.API.CreateDirectChannel(p.botUserID, userID)
+		// No, the correct way to get a DM channel is `GetDirectChannel`. If it doesn't exist, it creates one.
+		// Let's re-verify the API. `p.API.GetDirectChannel(userID1, userID2)` gets or creates a DM channel.
+
+		// Re-evaluating: The standard way is GetDirectChannel, which should create if not exists.
+		// If it specifically fails with "not found" or similar, then creation logic might be needed,
+		// but usually GetDirectChannel handles it. Let's stick to GetDirectChannel first.
+		// If appErr indicates a clear "channel not found" and does not create, then an explicit CreateDirectChannel call would follow.
+		// Given the plugin API, GetDirectChannel is generally sufficient.
+		// If GetDirectChannel returns an error, it means the channel couldn't be retrieved or created.
+		return errors.Wrapf(appErr, "failed to get or create direct channel with user %s", userID)
+	}
+
+	// Construct the post
+	post := &model.Post{
+		UserId:    p.botUserID,
+		ChannelId: channel.Id,
+		Message:   message,
+	}
+
+	// Create the post
+	_, appErr = p.API.CreatePost(post)
+	if appErr != nil {
+		return errors.Wrapf(appErr, "failed to post message to user %s in channel %s", userID, channel.Id)
+	}
+
+	return nil
+}
+
+// FindTeamAndMembers retrieves a team and its members.
+func (p *Plugin) FindTeamAndMembers(teamID string) (*model.Team, []*model.TeamMember, error) {
+	if teamID == "" {
+		return nil, nil, errors.New("FindTeamAndMembers: teamID cannot be empty")
+	}
+	team, appErr := p.API.GetTeam(teamID)
+	if appErr != nil {
+		return nil, nil, errors.Wrapf(appErr, "failed to get team with id: %s", teamID)
+	}
+
+	// Fetching first 100 members. Pagination can be added later if needed.
+	// The GetTeamMembers function takes page and perPage arguments.
+	members, appErr := p.API.GetTeamMembers(teamID, 0, 100)
+	if appErr != nil {
+		// Depending on desired behavior, you might return the team object even if members can't be fetched.
+		// For now, let's consider fetching members as a critical part of this function.
+		return team, nil, errors.Wrapf(appErr, "failed to get members for team id: %s", teamID)
+	}
+
+	return team, members, nil
+}
+
+// ReplyToMessage posts a reply to a given postID.
+func (p *Plugin) ReplyToMessage(postID, message string) (*model.Post, error) {
+	if p.botUserID == "" {
+		return nil, errors.New("ReplyToMessage: botUserID is not set")
+	}
+	if postID == "" {
+		return nil, errors.New("ReplyToMessage: postID cannot be empty")
+	}
+	if message == "" {
+		return nil, errors.New("ReplyToMessage: message cannot be empty")
+	}
+
+	originalPost, appErr := p.API.GetPost(postID)
+	if appErr != nil {
+		return nil, errors.Wrapf(appErr, "failed to get post with id: %s", postID)
+	}
+
+	rootID := originalPost.Id
+	if originalPost.RootId != "" {
+		rootID = originalPost.RootId
+	}
+
+	replyPost := &model.Post{
+		UserId:    p.botUserID,
+		ChannelId: originalPost.ChannelId,
+		Message:   message,
+		RootId:    rootID,
+	}
+
+	createdPost, appErr := p.API.CreatePost(replyPost)
+	if appErr != nil {
+		return nil, errors.Wrapf(appErr, "failed to create reply post to post id: %s", postID)
+	}
+
+	return createdPost, nil
+}
+
+// CreateTeamAndAddMembers creates a new team and adds the specified users to it.
+// It returns the created team. Member addition failures are logged but do not cause the function to fail.
+func (p *Plugin) CreateTeamAndAddMembers(teamName, teamDisplayName string, userIDs []string) (*model.Team, error) {
+	if teamName == "" {
+		return nil, errors.New("CreateTeamAndAddMembers: teamName cannot be empty")
+	}
+	if teamDisplayName == "" {
+		return nil, errors.New("CreateTeamAndAddMembers: teamDisplayName cannot be empty")
+	}
+
+	// Ensure botUserID is available if needed for any specific permissions, though CreateTeam itself doesn't require it.
+	if p.botUserID == "" {
+		// This might not be strictly necessary if CreateTeam can be called by a plugin without a specific user context,
+		// but it's good practice if other related operations might need it or if there's an implicit assumption.
+		// For now, let's ensure it, as adding members might have implications.
+		// However, AddTeamMember is called by the plugin, which has permissions.
+		// Let's remove this check as CreateTeam and AddTeamMember are system-level actions by the plugin.
+	}
+
+	teamToCreate := &model.Team{
+		Name:        teamName,
+		DisplayName: teamDisplayName,
+		Type:        model.TeamOpen, // Or model.TEAM_INVITE_ONLY for private teams
+	}
+
+	createdTeam, appErr := p.API.CreateTeam(teamToCreate)
+	if appErr != nil {
+		return nil, errors.Wrapf(appErr, "failed to create team with name: %s", teamName)
+	}
+
+	if len(userIDs) > 0 {
+		for _, userID := range userIDs {
+			if userID == "" {
+				p.API.LogWarn("CreateTeamAndAddMembers: Skipping empty userID.", "team_id", createdTeam.Id)
+				continue
+			}
+			// AddTeamMember adds a user to the team and also creates a TeamMembership record.
+			// The user performing this action (the plugin) needs appropriate permissions.
+			_, appErr := p.API.AddTeamMember(createdTeam.Id, userID)
+			if appErr != nil {
+				p.API.LogError("Failed to add user to team",
+					"user_id", userID,
+					"team_id", createdTeam.Id,
+					"error", appErr.Error())
+				// Continue trying to add other members
+			}
+		}
+	}
+
+	return createdTeam, nil
+}
+
+// CreateChannelAndAddMembers creates a new channel and adds the specified users to it.
+// It returns the created channel. Member addition failures are logged but do not cause the function to fail.
+func (p *Plugin) CreateChannelAndAddMembers(teamID, channelName, channelDisplayName, channelTypeStr string, userIDs []string) (*model.Channel, error) {
+	if teamID == "" {
+		return nil, errors.New("CreateChannelAndAddMembers: teamID cannot be empty")
+	}
+	if channelName == "" {
+		return nil, errors.New("CreateChannelAndAddMembers: channelName cannot be empty")
+	}
+	if channelDisplayName == "" {
+		return nil, errors.New("CreateChannelAndAddMembers: channelDisplayName cannot be empty")
+	}
+
+	var channelType model.ChannelType
+	switch channelTypeStr {
+	case model.ChannelTypeOpen:
+		channelType = model.ChannelTypeOpen
+	case model.ChannelTypePrivate:
+		channelType = model.ChannelTypePrivate
+	default:
+		return nil, errors.Errorf("CreateChannelAndAddMembers: invalid channelType '%s'. Must be '%s' or '%s'", channelTypeStr, model.ChannelTypeOpen, model.ChannelTypePrivate)
+	}
+
+	channelToCreate := &model.Channel{
+		TeamId:      teamID,
+		Name:        channelName,
+		DisplayName: channelDisplayName,
+		Type:        channelType,
+	}
+
+	createdChannel, appErr := p.API.CreateChannel(channelToCreate)
+	if appErr != nil {
+		return nil, errors.Wrapf(appErr, "failed to create channel '%s' in team '%s'", channelName, teamID)
+	}
+
+	if len(userIDs) > 0 {
+		for _, userID := range userIDs {
+			if userID == "" {
+				p.API.LogWarn("CreateChannelAndAddMembers: Skipping empty userID.", "channel_id", createdChannel.Id)
+				continue
+			}
+			// AddChannelMember adds a user to the channel.
+			// The user performing this action (the plugin) needs appropriate permissions.
+			// For public channels, users can often join themselves if they are team members.
+			// For private channels, explicit add is usually needed.
+			if _, appErr := p.API.AddChannelMember(createdChannel.Id, userID); appErr != nil {
+				p.API.LogError("Failed to add user to channel",
+					"user_id", userID,
+					"channel_id", createdChannel.Id,
+					"error", appErr.Error())
+				// Continue trying to add other members
+			}
+		}
+	}
+	return createdChannel, nil
+}
+
+// FindChannelAndMembers retrieves a channel and its members.
+func (p *Plugin) FindChannelAndMembers(channelID string) (*model.Channel, model.ChannelMembers, error) {
+	if channelID == "" {
+		return nil, nil, errors.New("FindChannelAndMembers: channelID cannot be empty")
+	}
+	channel, appErr := p.API.GetChannel(channelID)
+	if appErr != nil {
+		return nil, nil, errors.Wrapf(appErr, "failed to get channel with id: %s", channelID)
+	}
+
+	members, appErr := p.API.GetChannelMembers(channelID, 0, 100)
+	if appErr != nil {
+		return channel, nil, errors.Wrapf(appErr, "failed to get members for channel id: %s", channelID)
+	}
+	if members == nil { // Ensure members is not nil if API returns nil, nil for no members
+		return channel, model.ChannelMembers{}, nil
+	}
+
+	return channel, *members, nil
+}
+
+// PostMessageToChannel sends a message from the bot to the specified channel.
+func (p *Plugin) PostMessageToChannel(channelID, message string) (*model.Post, error) {
+	if p.botUserID == "" {
+		return nil, errors.New("PostMessageToChannel: botUserID is not set")
+	}
+	if channelID == "" {
+		return nil, errors.New("PostMessageToChannel: channelID cannot be empty")
+	}
+	if message == "" {
+		return nil, errors.New("PostMessageToChannel: message cannot be empty")
+	}
+
+	post := &model.Post{
+		UserId:    p.botUserID,
+		ChannelId: channelID,
+		Message:   message,
+	}
+
+	createdPost, appErr := p.API.CreatePost(post)
+	if appErr != nil {
+		return nil, errors.Wrapf(appErr, "failed to post message to channel %s", channelID)
+	}
+
+	return createdPost, nil
+}
+
 // This will execute the commands that were registered in the NewCommandHandler function.
 func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*model.CommandResponse, *model.AppError) {
 	response, err := p.commandClient.Handle(args)
