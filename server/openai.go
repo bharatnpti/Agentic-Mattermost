@@ -1,12 +1,20 @@
 package main
 
 import (
+	"context" // Required by machinebox/graphql
+	"fmt"
+	// "bytes" // May no longer be needed by CallGraphQLAgentFunc
+	// "encoding/json" // May no longer be needed for top-level request/response marshalling by CallGraphQLAgentFunc
+	// "net/http" // May no longer be needed by CallGraphQLAgentFunc
+	// "strings" // No longer needed as GraphQL errors are handled by machinebox/graphql
+
+	"github.com/machinebox/graphql"
+	"io/ioutil" // Required by CallOpenAIAPIFunc
+
+	// Keep these for CallOpenAIAPIFunc and its structs
 	"bytes"
 	"encoding/json"
-	"fmt"
-	"io/ioutil"
 	"net/http"
-	"strings"
 )
 
 // OpenAIRequest defines the structure for the OpenAI API request.
@@ -35,7 +43,8 @@ type Choice struct {
 const OpenAIAPIURL = "https://api.openai.com/v1/chat/completions"
 
 // GraphQLAgentAPIURL is the URL for the GraphQL agent API.
-const GraphQLAgentAPIURL = "https://ia-platform-contract-agent.dev.apps.oneai.yo-digital.com/graphiql?path=/graphql"
+// Changed to var for testability (allowing modification for network error tests).
+var GraphQLAgentAPIURL = "https://ia-platform-contract-agent.dev.apps.oneai.yo-digital.com/graphiql?path=/graphql"
 
 // CallOpenAIAPIFunc is a function variable that can be replaced for testing.
 // It makes a request to the OpenAI API and returns the response.
@@ -98,8 +107,15 @@ var CallOpenAIAPIFunc = func(apiKey string, message string, apiURL string) (stri
 // The apiKey parameter is kept for now for structural consistency but might not be used
 // if the GraphQL endpoint does not require bearer token authentication in this manner.
 // Added apiURL parameter for testability.
-var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID string, tenantID string, channelID string, userMessage string, apiURL string) ([]MessageOutput, error) {
-	graphQLQuery := `
+var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, userMessage string, apiURL string) ([]MessageOutput, error) {
+	// Create a new GraphQL client
+	client := graphql.NewClient(apiURL) // Use the passed apiURL
+
+	// The original query is a subscription.
+	// Note: machinebox/graphql primarily sends queries/mutations over HTTP POST.
+	// If the server strictly requires WebSockets for subscriptions, this might not work as a true subscription.
+	// However, some servers accept 'subscription' keyword over POST and treat it as a query.
+	graphQLQueryString := `
            subscription Agent($request: AgentRequestInput!) {
                agent(request: $request) {
                    anonymizationEntities {
@@ -126,12 +142,16 @@ var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID str
 	// or the transport mechanism would need to change to WebSockets.
 	// For this step, we will proceed with HTTP POST as implied by current structure.
 
+	// Create a request
+	gqlReq := graphql.NewRequest(graphQLQueryString)
+
+	// Define the request payload (variables)
 	requestPayload := AgentRequestInput{
 		ConversationContext: ConversationContextInput{
 			ConversationID: conversationID,
 		},
 		SystemContext: []SystemContextInput{
-			{Key: "channelId", Value: channelID},
+			{Key: "channelId", Value: channelIDSystemContext}, // Parameter name updated
 			{Key: "tenantId", Value: tenantID},
 		},
 		UserContext: UserContextInput{
@@ -146,89 +166,38 @@ var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID str
 			},
 		},
 	}
+	gqlReq.Var("request", requestPayload)
 
-	graphqlVariables := map[string]interface{}{
-		"request": requestPayload,
-	}
-
-	httpRequestPayload := GraphQLRequest{
-		Query:     graphQLQuery,
-		Variables: graphqlVariables,
-	}
-
-	jsonBody, err := json.Marshal(httpRequestPayload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal GraphQL request body: %w", err)
-	}
-
-	// Use the provided apiURL parameter instead of the global constant
-	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create GraphQL request: %w", err)
-	}
-
-	// If the GraphQL API requires a specific API key or token, add it here.
-	// For example, if it uses a Bearer token like OpenAI:
+	// Set headers if needed (e.g., for authentication)
+	// The apiKey is passed but not used here unless a specific header is required.
 	// if apiKey != "" {
-	//  req.Header.Set("Authorization", "Bearer " + apiKey)
+	//  gqlReq.Header.Set("Authorization", "Bearer " + apiKey)
 	// }
-	// If it uses a different auth mechanism (e.g. x-api-key), adjust accordingly.
-	// For now, we are not adding any specific auth header beyond Content-Type.
-	req.Header.Set("Content-Type", "application/json")
+	// gqlReq.Header.Set("Content-Type", "application/json") // Library usually sets this.
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send GraphQL request: %w", err)
-	}
-	defer resp.Body.Close()
+	// Define a context
+	ctx := context.Background()
 
-	responseBody, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read GraphQL response body: %w", err)
-	}
+	// Define the structure for the response.
+	// machinebox/graphql unmarshals the content of the "data" field.
+	var respData AgentResponseWrapper // This struct has `Agent AgentResponseData `json:"agent"`
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GraphQL API request failed with status %d: %s", resp.StatusCode, string(responseBody))
+	// Run the request
+	if err := client.Run(ctx, gqlReq, &respData); err != nil {
+		// This error could be a network error, a non-200 status, or a GraphQL error returned in the error object by the library.
+		return nil, fmt.Errorf("graphql request failed: %w", err)
 	}
 
-	var gqlResponse GraphQLResponse
-	err = json.Unmarshal(responseBody, &gqlResponse)
-	if err != nil {
-		// Attempt to log more details if unmarshalling fails
-		// Check if it's a direct agent response for non-subscription HTTP calls
-		var agentResp AgentResponseData
-		if errDirect := json.Unmarshal(responseBody, &agentResp); errDirect == nil && len(agentResp.Messages) > 0 {
-			// This might be the case if the server returns the 'agent' data directly under 'data' or even at root for non-subscription queries over HTTP
-			// For now, we stick to the defined GraphQLResponse structure
-			// This block is more for debugging if the primary unmarshal fails.
-		}
-		return nil, fmt.Errorf("failed to unmarshal GraphQL response body: %w. Body: %s", err, string(responseBody))
+	// If client.Run returns no error, it implies GraphQL errors were not in the main error path.
+	// machinebox/graphql typically returns an error from Run if the response JSON contains an "errors" field.
+
+	if respData.Agent.Messages == nil {
+		// This case handles when 'agent' is present but 'messages' is null, or if 'agent' itself is null.
+		// It could also happen if the unmarshalling into respData didn't work as expected.
+		return nil, fmt.Errorf("no messages found in GraphQL response, or response structure mismatch")
 	}
 
-	if len(gqlResponse.Errors) > 0 {
-		var errorMessages []string
-		for _, gqlErr := range gqlResponse.Errors {
-			errorMessages = append(errorMessages, gqlErr.Message)
-		}
-		return nil, fmt.Errorf("GraphQL query returned errors: %s", strings.Join(errorMessages, "; "))
-	}
-
-	// Check if the nested structure is as expected
-	if gqlResponse.Data.Agent.Messages == nil {
-		// This case handles when 'agent' is present but 'messages' is null.
-		// Consider if anonymizationEntities alone is a valid response.
-		// Based on the issue, we need messages.
-		return nil, fmt.Errorf("no messages found in GraphQL response. Response body: %s", string(responseBody))
-	}
-
-	return gqlResponse.Data.Agent.Messages, nil
-}
-
-// GraphQLRequest wraps the query and variables for a GraphQL request.
-type GraphQLRequest struct {
-	Query     string                 `json:"query"`
-	Variables map[string]interface{} `json:"variables"`
+	return respData.Agent.Messages, nil
 }
 
 // AgentRequestInput defines the structure for the 'request' input object in the GraphQL query.
@@ -263,27 +232,32 @@ type MessageInput struct {
 	Role    string `json:"role"`
 }
 
-// GraphQLResponse wraps the data received from a GraphQL query.
-type GraphQLResponse struct {
-	Data   AgentResponseWrapper `json:"data"`
-	Errors []GraphQLError       `json:"errors,omitempty"` // To capture potential GraphQL errors
-}
+// GraphQLRequest struct is no longer needed by CallGraphQLAgentFunc.
+// type GraphQLRequest struct {
+// 	Query     string                 `json:"query"`
+// 	Variables map[string]interface{} `json:"variables"`
+// }
 
-// GraphQLError defines the structure for an error returned by GraphQL.
-type GraphQLError struct {
-	Message    string        `json:"message"`
-	Locations  []Location    `json:"locations,omitempty"`
-	Path       []interface{} `json:"path,omitempty"`
-	Extensions interface{}   `json:"extensions,omitempty"`
-}
+// GraphQLResponse struct may also be obsolete for CallGraphQLAgentFunc if machinebox/graphql handles errors well.
+// type GraphQLResponse struct {
+// 	Data   AgentResponseWrapper `json:"data"`
+// 	Errors []GraphQLError       `json:"errors,omitempty"`
+// }
 
-// Location defines the structure for error locations in GraphQL.
-type Location struct {
-	Line   int `json:"line"`
-	Column int `json:"column"`
-}
+// GraphQLError and Location structs might also be obsolete if machinebox/graphql handles these.
+// type GraphQLError struct {
+// 	Message    string        `json:"message"`
+// 	Locations  []Location    `json:"locations,omitempty"`
+// 	Path       []interface{} `json:"path,omitempty"`
+// 	Extensions interface{}   `json:"extensions,omitempty"`
+// }
+// type Location struct {
+// 	Line   int `json:"line"`
+// 	Column int `json:"column"`
+// }
 
 // AgentResponseWrapper wraps the 'agent' field in the GraphQL response.
+// This is now the primary response struct for client.Run.
 type AgentResponseWrapper struct {
 	Agent AgentResponseData `json:"agent"`
 }
