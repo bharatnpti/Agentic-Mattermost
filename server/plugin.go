@@ -80,8 +80,25 @@ func (p *Plugin) OnActivate() error {
 		GetOpenAIAPIKey: func() string {
 			return p.getConfiguration().OpenAIAPIKey
 		},
-		CallOpenAIFunc: CallOpenAIAPIFunc,
-		OpenAIAPIURL:   OpenAIAPIURL,
+		CallGraphQLAgentFunc: func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, userMessage string, apiURL string) ([]command.AgentMessageOutput, error) {
+			// Call the global CallGraphQLAgentFunc from the main package
+			mainMessages, err := CallGraphQLAgentFunc(apiKey, conversationID, userID, tenantID, channelIDSystemContext, userMessage, apiURL)
+			if err != nil {
+				return nil, err
+			}
+			// Convert []main.MessageOutput to []command.AgentMessageOutput
+			var commandMessages []command.AgentMessageOutput
+			for _, msg := range mainMessages {
+				commandMessages = append(commandMessages, command.AgentMessageOutput{
+					Content: msg.Content,
+					Format:  msg.Format,
+					Role:    msg.Role,
+					TurnID:  msg.TurnID,
+				})
+			}
+			return commandMessages, nil
+		},
+		// OpenAIAPIURL field removed
 		ParseArguments: func(argsString string) (string, int, error) {
 			return p.parseMaestroArgs(argsString)
 		},
@@ -314,32 +331,43 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 		finalPrompt = fmt.Sprintf("User query: %s\n%s", taskName, messagesString)
 	}
 
-	openAIResponse, err := CallOpenAIAPIFunc(apiKey, finalPrompt, OpenAIAPIURL) // Global vars
+	// Parameters for GraphQL call
+	graphQLConversationID := "1"
+	graphQLTenantID := "de"
+	graphQLSystemChannelID := "ONEAPPWEB" // Specific value for GraphQL system context
+
+	// The 'finalPrompt' is the actual message content to be sent to the agent.
+	messages, err := CallGraphQLAgentFunc(apiKey, graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, finalPrompt, GraphQLAgentAPIURL) // Pass the API URL
 	if err != nil {
-		p.API.LogError("Error calling OpenAI API for !maestro task", "error", err.Error(), "user_id", userID, "task_name", taskName)
+		p.API.LogError("Error calling GraphQL Agent for !maestro task", "error", err.Error(), "user_id", userID, "task_name", taskName)
 		p.API.SendEphemeralPost(userID, &model.Post{
-			ChannelId: channelID,
-			Message:   "An error occurred while contacting OpenAI. Please try again later or contact an administrator.",
+			ChannelId: channelID, // Mattermost channel ID for the ephemeral post
+			Message:   "An error occurred while contacting the agent. Please try again later or contact an administrator.",
 			RootId:    rootID,
 		})
 		return err
 	}
 
-	responsePost := &model.Post{
-		UserId:    p.botUserID,
-		ChannelId: channelID,
-		Message:   openAIResponse,
-		RootId:    rootID, // Thread the response to the !maestro message
-	}
-
-	if _, appErr := p.API.CreatePost(responsePost); appErr != nil {
-		p.API.LogError("Failed to post OpenAI response for !maestro task", "error", appErr.Error(), "user_id", userID)
+	if len(messages) == 0 {
+		p.API.LogInfo("GraphQL Agent returned no messages for !maestro task", "user_id", userID, "task_name", taskName)
+		// It's good practice to inform the user even if there are no messages.
 		p.API.SendEphemeralPost(userID, &model.Post{
-			ChannelId: channelID,
-			Message:   "An error occurred while trying to post the OpenAI response.",
+			ChannelId: channelID, // Mattermost channel ID
+			Message:   "The agent processed your request but returned no messages.",
 			RootId:    rootID,
 		})
-		return errors.Wrap(appErr, "failed to create response post")
+		return nil
 	}
+
+	// Post each message as an ephemeral post
+	for _, msg := range messages {
+		ephemeralPost := &model.Post{
+			ChannelId: channelID,
+			Message:   msg.Content,
+			RootId:    rootID, // Thread to the original !maestro message
+		}
+		p.API.SendEphemeralPost(userID, ephemeralPost)
+	}
+
 	return nil
 }

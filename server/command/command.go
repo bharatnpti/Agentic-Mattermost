@@ -10,14 +10,22 @@ import (
 	// Removed direct import of "github.com/mattermost/mattermost-plugin-starter-template/server/main"
 )
 
+// AgentMessageOutput is a local copy of the main.MessageOutput struct
+// to avoid direct import of the main package.
+type AgentMessageOutput struct {
+	Content string `json:"content"`
+	Format  string `json:"format"`
+	Role    string `json:"role"`
+	TurnID  string `json:"turnId"`
+}
+
 // HandlerDependencies defines the dependencies needed by the command Handler from the main plugin.
 type HandlerDependencies struct {
-	API             plugin.API
-	BotUserID       string
-	GetOpenAIAPIKey func() string                                                         // Kept for now, in case other commands might use it
-	CallOpenAIFunc  func(apiKey string, message string, apiURL string) (string, error)    // Kept for now
-	OpenAIAPIURL    string                                                                // Kept for now
-	ParseArguments  func(argsString string) (taskName string, numMessages int, err error) // Kept for now
+	API                  plugin.API
+	BotUserID            string
+	GetOpenAIAPIKey      func() string                                                                                                                                        // Kept for now, in case other commands might use it
+	CallGraphQLAgentFunc func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, userMessage string, apiURL string) ([]AgentMessageOutput, error) // New, added apiURL
+	ParseArguments       func(argsString string) (taskName string, numMessages int, err error)                                                                                // Kept for now
 }
 
 const DefaultNumMessages = 10 // Exported for use in plugin.go

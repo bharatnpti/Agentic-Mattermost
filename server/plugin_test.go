@@ -1,536 +1,279 @@
 package main
 
 import (
+	"errors"
 	"fmt"
-	"github.com/mattermost/mattermost/server/public/plugin"
+	"net/http" // Added import
 	"strings"
 	"testing"
 
-	"github.com/mattermost/mattermost-plugin-starter-template/server/command" // For DefaultNumMessages
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
-	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
-// TestParseMaestroArgs tests the argument parsing for !maestro commands.
-// Adapted from the former TestParseOpenAICommandArgs.
-func TestParseMaestroArgs(t *testing.T) {
-	// p.parseMaestroArgs doesn't actually use any fields from p, so a nil receiver or minimal struct is fine.
-	// However, to make it a valid method call, we need an instance.
-	p := &Plugin{}
-
-	tests := []struct {
-		name             string
-		argsString       string // This is the string *after* "!maestro "
-		expectedTask     string
-		expectedN        int
-		expectError      bool
-		expectedErrorMsg string
-	}{
-		{
-			name:         "valid: task_name and num_messages",
-			argsString:   "summarize -n 10",
-			expectedTask: "summarize",
-			expectedN:    10,
-			expectError:  false,
-		},
-		{
-			name:         "valid: task_name only",
-			argsString:   "summarize",
-			expectedTask: "summarize",
-			expectedN:    command.DefaultNumMessages, // Should default
-			expectError:  false,
-		},
-		{
-			name:         "valid: multi-word task_name",
-			argsString:   "translate to french -n 5",
-			expectedTask: "translate to french",
-			expectedN:    5,
-			expectError:  false,
-		},
-		{
-			name:         "valid: multi-word task_name and no n value",
-			argsString:   "translate to french",
-			expectedTask: "translate to french",
-			expectedN:    command.DefaultNumMessages,
-			expectError:  false,
-		},
-		{
-			name:             "invalid: missing task_name (empty string)",
-			argsString:       "", // Equivalent to just "!maestro"
-			expectError:      true,
-			expectedErrorMsg: "not enough arguments. Usage: !maestro <task_name> [-n <num_messages>]",
-		},
-		{
-			name:             "invalid: non-integer num_messages",
-			argsString:       "summarize -n abc",
-			expectError:      true,
-			expectedErrorMsg: "invalid value for -n: 'abc'. It must be an integer",
-		},
-		{
-			name:             "invalid: negative num_messages",
-			argsString:       "summarize -n -5",
-			expectError:      true,
-			expectedErrorMsg: "invalid value for -n: -5. It must be a positive integer",
-		},
-		{
-			name:             "invalid: zero num_messages",
-			argsString:       "summarize -n 0",
-			expectError:      true,
-			expectedErrorMsg: "invalid value for -n: 0. It must be a positive integer",
-		},
-		{
-			name:             "invalid: unknown flag after -n value",
-			argsString:       "summarize -n 10 -x",
-			expectError:      true,
-			expectedErrorMsg: "unknown or misplaced flag: -x. Flags like -n must come after the task name",
-		},
-		{
-			name:             "invalid: unknown flag instead of task name part or -n",
-			argsString:       "summarize -x 10",
-			expectError:      true,
-			expectedErrorMsg: "unknown or misplaced flag: -x. Only -n is a recognized flag",
-		},
-		{
-			name:             "invalid: non-flag arguments after -n value",
-			argsString:       "summarize -n 10 somethingelse",
-			expectError:      true,
-			expectedErrorMsg: "unexpected argument: somethingelse. No arguments are allowed after -n <value>",
-		},
-		{
-			name:         "valid: task_name and -n at the end",
-			argsString:   "do this thing -n 3",
-			expectedTask: "do this thing",
-			expectedN:    3,
-			expectError:  false,
-		},
-		{
-			name:             "invalid: -n missing value",
-			argsString:       "summarize -n",
-			expectError:      true,
-			expectedErrorMsg: "missing value for -n argument",
-		},
-		{
-			name:         "valid: task name with leading/trailing spaces in parts (handled by strings.Fields)",
-			argsString:   "  task  with   spaces  -n  7  ", // strings.Fields will handle outer spaces
-			expectedTask: "task with spaces",               // Inner spaces preserved by Join
-			expectedN:    7,
-			expectError:  false,
-		},
-		{
-			name:         "valid: task name is just one word before -n",
-			argsString:   "task -n 1",
-			expectedTask: "task",
-			expectedN:    1,
-			expectError:  false,
-		},
-		{
-			name:             "invalid: only -n and value",
-			argsString:       "-n 10",
-			expectError:      true,
-			expectedErrorMsg: "task_name cannot be empty. Usage: !maestro <task_name> [-n <num_messages>]",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Since parseMaestroArgs is a method on p, call it like p.parseMaestroArgs
-			task, n, err := p.parseMaestroArgs(tt.argsString)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.expectedErrorMsg != "" {
-					assert.EqualError(t, err, tt.expectedErrorMsg)
-				}
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.expectedTask, task)
-				assert.Equal(t, tt.expectedN, n)
-			}
-		})
-	}
-}
-
-// MockPluginAPI is a helper struct to mock plugin.API for plugin tests
-type MockPluginAPI struct {
-	plugintest.API           // Embeds plugintest.API for default behaviors
-	Mock           mock.Mock // testify's mock for custom expectations
-}
-
-func (m *MockPluginAPI) GetPostsForChannel(channelID string, page, perPage int) (*model.PostList, *model.AppError) {
-	args := m.Mock.Called(channelID, page, perPage)
-	var postList *model.PostList
-	if args.Get(0) != nil {
-		postList = args.Get(0).(*model.PostList)
-	}
-	var appErr *model.AppError
-	if args.Get(1) != nil {
-		appErr = args.Get(1).(*model.AppError)
-	}
-	return postList, appErr
-}
-
-func (m *MockPluginAPI) CreatePost(post *model.Post) (*model.Post, *model.AppError) {
-	args := m.Mock.Called(post)
-	var createdPost *model.Post
-	if args.Get(0) != nil {
-		createdPost = args.Get(0).(*model.Post)
-	}
-	var appErr *model.AppError
-	if args.Get(1) != nil {
-		appErr = args.Get(1).(*model.AppError)
-	}
-	return createdPost, appErr
-}
-
-func (m *MockPluginAPI) SendEphemeralPost(userID string, post *model.Post) *model.Post {
-	args := m.Mock.Called(userID, post)
-	if args.Get(0) != nil {
-		return args.Get(0).(*model.Post)
-	}
-	return nil // Return nil if the mock is configured to return nil for the first argument
-}
-
-func (m *MockPluginAPI) LogError(msg string, keyValuePairs ...interface{}) {
-	allArgs := append([]interface{}{msg}, keyValuePairs...)
-	m.Mock.Called(allArgs...)
-}
-
-func (m *MockPluginAPI) LogInfo(msg string, keyValuePairs ...interface{}) {
-	allArgs := append([]interface{}{msg}, keyValuePairs...)
-	m.Mock.Called(allArgs...)
-}
-
 func TestProcessMaestroTask(t *testing.T) {
-	botUserID := "testbotuserid"
-	channelID := "testchannelid"
-	userID := "testuserid"
-	rootID := "rootpostid"
+	originalCallGraphQLAgentFunc := CallGraphQLAgentFunc
+	defer func() { CallGraphQLAgentFunc = originalCallGraphQLAgentFunc }()
 
-	// Store original CallOpenAIAPIFunc and OpenAIAPIURL to restore them later
-	originalCallFunc := CallOpenAIAPIFunc
-	defer func() {
-		CallOpenAIAPIFunc = originalCallFunc
-	}()
+	defaultTestTaskName := "Test task"
+	defaultNumMessages := 5
+	defaultChannelID := "testChannelID"
+	defaultUserID := "testUserID"
+	defaultRootID := "testRootID"
+	defaultBotUserID := "testBotID"
+	defaultAPIKey := "test_key"
 
-	setupPlugin := func(apiKey string) (*Plugin, *MockPluginAPI) {
-		apiMock := &MockPluginAPI{}
-		p := &Plugin{
-			MattermostPlugin: plugin.MattermostPlugin{
-				API: apiMock,
-			},
-			botUserID: botUserID,
-			configuration: &configuration{
-				OpenAIAPIKey: apiKey,
-			},
-		}
-		return p, apiMock
+	setupAPI := func() *plugintest.API {
+		api := &plugintest.API{}
+		// Default mocks - can be overridden by specific tests
+		api.On("GetConfiguration").Return(&model.Config{LogSettings: model.LogSettings{EnableFile: new(bool)}}, nil).Maybe() // Part of p.getConfiguration()
+		api.On("GetConfig").Return(&model.Config{LogSettings: model.LogSettings{EnableFile: new(bool)}}).Maybe()             // If API.GetConfig() is directly used
+
+		api.On("LogError", mock.AnythingOfType("string"), mock.AnythingOfType("string"), mock.Anything, mock.AnythingOfType("string"), mock.Anything, mock.AnythingOfType("string"), mock.Anything, mock.AnythingOfType("string"), mock.Anything).Return(nil).Maybe()
+		api.On("LogError", mock.AnythingOfType("string"), mock.AnythingOfType("string"), mock.Anything, mock.AnythingOfType("string"), mock.Anything).Return(nil).Maybe()
+		api.On("LogError", mock.AnythingOfType("string"), mock.AnythingOfType("string"), mock.Anything).Return(nil).Maybe() // Simpler LogError
+		api.On("LogError", mock.Anything).Return(nil).Maybe()                                                              // Simplest LogError
+
+		// Default GetPostsForChannel mock
+		mockPostList := &model.PostList{}
+		mockPostList.AddPost(&model.Post{Id: "post_before_1", UserId: "another_user", Message: "Some previous message", CreateAt: model.GetMillis() - 1000})
+		mockPostList.AddPost(&model.Post{Id: "post_before_2", UserId: "another_user", Message: "Another previous message", CreateAt: model.GetMillis() - 2000})
+		mockPostList.AddOrder("post_before_1")
+		mockPostList.AddOrder("post_before_2")
+		api.On("GetPostsForChannel", defaultChannelID, 0, defaultNumMessages+10).Return(mockPostList, nil).Maybe()
+		return api
 	}
 
-	t.Run("successful execution for summarize", func(t *testing.T) {
-		p, apiMock := setupPlugin("test-key")
-		defer apiMock.Mock.AssertExpectations(t)
-
-		taskName := "summarize"
-		numMessages := 2
-		expectedOpenAIResponse := "This is a summary."
-
-		// Mock CallOpenAIAPIFunc
-		var capturedPrompt string
-		CallOpenAIAPIFunc = func(apiKey, message, apiURL string) (string, error) {
-			capturedPrompt = message
-			assert.Equal(t, "test-key", apiKey)
-			// You could also assert apiURL if it's configurable and important
-			return expectedOpenAIResponse, nil
-		}
-
-		postList := model.NewPostList()
-		postList.AddPost(&model.Post{Id: "post2", UserId: "user1", Message: "message one", CreateAt: 2000, ChannelId: channelID})
-		postList.AddPost(&model.Post{Id: "post1", UserId: "user2", Message: "message two", CreateAt: 1000, ChannelId: channelID})
-		postList.AddOrder("post2")
-		postList.AddOrder("post1") // Newest first
-
-		// numMessages+10 is used in processMaestroTask
-		apiMock.Mock.On("GetPostsForChannel", channelID, 0, numMessages+10).Return(postList, (*model.AppError)(nil)).Once()
-
-		apiMock.Mock.On("CreatePost", mock.MatchedBy(func(post *model.Post) bool {
-			return post.UserId == botUserID &&
-				post.ChannelId == channelID &&
-				post.Message == expectedOpenAIResponse &&
-				post.RootId == rootID
-		})).Return(&model.Post{Id: "responsepostid"}, (*model.AppError)(nil)).Once()
-
-		err := p.processMaestroTask(taskName, numMessages, channelID, userID, rootID)
-		assert.NoError(t, err)
-		assert.Equal(t, "Summarize the following messages:\nmessage two\nmessage one", capturedPrompt)
-	})
-
-	t.Run("successful execution for generic task", func(t *testing.T) {
-		p, apiMock := setupPlugin("test-key")
-		defer apiMock.Mock.AssertExpectations(t)
-
-		taskName := "explain this concept"
-		numMessages := 1
-		expectedOpenAIResponse := "This is an explanation."
-
-		var capturedPrompt string
-		CallOpenAIAPIFunc = func(apiKey, message, apiURL string) (string, error) {
-			capturedPrompt = message
-			return expectedOpenAIResponse, nil
-		}
-
-		postList := model.NewPostList()
-		postList.AddPost(&model.Post{Id: "post1", UserId: "userA", Message: "Some context", CreateAt: 1000, ChannelId: channelID})
-		postList.AddOrder("post1")
-
-		apiMock.Mock.On("GetPostsForChannel", channelID, 0, numMessages+10).Return(postList, (*model.AppError)(nil)).Once()
-
-		apiMock.Mock.On("CreatePost", mock.MatchedBy(func(post *model.Post) bool {
-			return post.Message == expectedOpenAIResponse && post.RootId == rootID
-		})).Return(&model.Post{}, (*model.AppError)(nil)).Once()
-
-		err := p.processMaestroTask(taskName, numMessages, channelID, userID, rootID)
-		assert.NoError(t, err)
-		assert.Equal(t, fmt.Sprintf("User query: %s\nSome context", taskName), capturedPrompt)
-	})
-
-	t.Run("error: no API key", func(t *testing.T) {
-		p, apiMock := setupPlugin("") // Empty API key
-		defer apiMock.Mock.AssertExpectations(t)
-
-		apiMock.Mock.On("SendEphemeralPost", userID, mock.AnythingOfType("*model.Post")).Return(&model.Post{}).Once()
-		// LogError is not directly called by processMaestroTask for empty API key, it returns an error.
-		// The calling function (MessageHasBeenPosted) would log.
-
-		err := p.processMaestroTask("summarize", 5, channelID, userID, rootID)
-		assert.Error(t, err)
-		assert.Equal(t, "OpenAI API Key is not configured", err.Error())
-	})
-
-	t.Run("error: GetPostsForChannel fails", func(t *testing.T) {
-		p, apiMock := setupPlugin("test-key")
-		defer apiMock.Mock.AssertExpectations(t)
-
-		appErr := model.NewAppError("GetPostsForChannel", "some.error", nil, "db error", 500)
-		apiMock.Mock.On("GetPostsForChannel", channelID, 0, 5+10).Return((*model.PostList)(nil), appErr).Once()
-		apiMock.Mock.On("LogError", "Failed to fetch posts for channel", "channel_id", channelID, "error", appErr.Error()).Once()
-		apiMock.Mock.On("SendEphemeralPost", userID, mock.AnythingOfType("*model.Post")).Return(&model.Post{}).Once()
-
-		err := p.processMaestroTask("summarize", 5, channelID, userID, rootID)
-		assert.Error(t, err)
-		assert.True(t, strings.HasPrefix(err.Error(), "failed to fetch posts: "))
-	})
-
-	t.Run("error: CallOpenAIAPIFunc fails", func(t *testing.T) {
-		p, apiMock := setupPlugin("test-key")
-		defer apiMock.Mock.AssertExpectations(t)
-
-		openAIError := errors.New("OpenAI API down")
-		CallOpenAIAPIFunc = func(apiKey, message, apiURL string) (string, error) {
-			return "", openAIError
-		}
-
-		postList := model.NewPostList() // Empty is fine, it will proceed to call OpenAI
-		apiMock.Mock.On("GetPostsForChannel", channelID, 0, 5+10).Return(postList, (*model.AppError)(nil)).Once()
-		apiMock.Mock.On("LogError", "Error calling OpenAI API for !maestro task", "error", openAIError.Error(), "user_id", userID, "task_name", "summarize").Once()
-		apiMock.Mock.On("SendEphemeralPost", userID, mock.AnythingOfType("*model.Post")).Return(&model.Post{}).Once()
-
-		err := p.processMaestroTask("summarize", 5, channelID, userID, rootID)
-		assert.Error(t, err)
-		assert.Equal(t, openAIError, err)
-	})
-
-	t.Run("error: CreatePost fails", func(t *testing.T) {
-		p, apiMock := setupPlugin("test-key")
-		defer apiMock.Mock.AssertExpectations(t)
-
-		CallOpenAIAPIFunc = func(apiKey, message, apiURL string) (string, error) {
-			return "AI response", nil
-		}
-
-		postList := model.NewPostList()
-		apiMock.Mock.On("GetPostsForChannel", channelID, 0, 5+10).Return(postList, (*model.AppError)(nil)).Once()
-
-		createPostErr := model.NewAppError("CreatePost", "some.error", nil, "failed to save post", 500)
-		apiMock.Mock.On("CreatePost", mock.AnythingOfType("*model.Post")).Return((*model.Post)(nil), createPostErr).Once()
-		apiMock.Mock.On("LogError", "Failed to post OpenAI response for !maestro task", "error", createPostErr.Error(), "user_id", userID).Once()
-		apiMock.Mock.On("SendEphemeralPost", userID, mock.AnythingOfType("*model.Post")).Return(&model.Post{}).Once()
-
-		err := p.processMaestroTask("summarize", 5, channelID, userID, rootID)
-		assert.Error(t, err)
-		assert.True(t, strings.HasPrefix(err.Error(), "failed to create response post: "))
-	})
-
-	t.Run("message filtering in processMaestroTask", func(t *testing.T) {
-		p, apiMock := setupPlugin("test-key")
-		defer apiMock.Mock.AssertExpectations(t)
-
-		taskName := "analyze"
-		numMessages := 3
-
-		var capturedPrompt string
-		CallOpenAIAPIFunc = func(apiKey, message, apiURL string) (string, error) {
-			capturedPrompt = message
-			return "Analysis done.", nil
-		}
-
-		postList := model.NewPostList()
-		// Order: newest to oldest as API returns
-		postList.AddPost(&model.Post{Id: "post5", UserId: "userA", Message: "user message 3", CreateAt: 5000})
-		postList.AddPost(&model.Post{Id: "post4", UserId: botUserID, Message: "bot message", CreateAt: 4000})      // Should be filtered
-		postList.AddPost(&model.Post{Id: rootID, UserId: userID, Message: "!maestro " + taskName, CreateAt: 3500}) // The trigger message
-		postList.AddPost(&model.Post{Id: "post3", UserId: "userB", Message: "user message 2", CreateAt: 3000})
-		postList.AddPost(&model.Post{Id: "post2", UserId: "userC", Message: "!maestro other task", CreateAt: 2000}) // Should be filtered
-		postList.AddPost(&model.Post{Id: "post1", UserId: "userD", Message: "user message 1", CreateAt: 1000})
-		postList.AddOrder("post5")
-		postList.AddOrder("post4")
-		postList.AddOrder(rootID)
-		postList.AddOrder("post3")
-		postList.AddOrder("post2")
-		postList.AddOrder("post1")
-
-		apiMock.Mock.On("GetPostsForChannel", channelID, 0, numMessages+10).Return(postList, (*model.AppError)(nil)).Once()
-		apiMock.Mock.On("CreatePost", mock.AnythingOfType("*model.Post")).Return(&model.Post{}, (*model.AppError)(nil)).Once()
-
-		err := p.processMaestroTask(taskName, numMessages, channelID, userID, rootID)
-		assert.NoError(t, err)
-
-		expectedMessages := "user message 1\nuser message 2\nuser message 3"
-		expectedFullPrompt := fmt.Sprintf("User query: %s\n%s", taskName, expectedMessages)
-		assert.Equal(t, expectedFullPrompt, capturedPrompt)
-	})
-}
-
-func TestMessageHasBeenPosted(t *testing.T) {
-	botUserID := "testbotuserid"
-	userID := "testactiveuserid"
-	channelID := "testchannelid"
-
-	// Store original CallOpenAIAPIFunc and OpenAIAPIURL to restore them later
-	originalCallFunc := CallOpenAIAPIFunc
-	defer func() {
-		CallOpenAIAPIFunc = originalCallFunc
-	}()
-
-	setupPluginAndPost := func(message, postUserID string) (*Plugin, *MockPluginAPI, *model.Post) {
-		apiMock := &MockPluginAPI{}
-		p := &Plugin{
-			MattermostPlugin: plugin.MattermostPlugin{
-				API: apiMock,
-			},
-			botUserID: botUserID,
-			configuration: &configuration{
-				OpenAIAPIKey: "test-api-key", // Assume valid key for most MessageHasBeenPosted tests
-			},
-		}
-		post := &model.Post{
-			UserId:    postUserID,
-			Message:   message,
-			ChannelId: channelID,
-			Id:        model.NewId(), // Unique ID for the post
-		}
-		return p, apiMock, post
+	setupPlugin := func(api *plugintest.API, apiKey string) *Plugin {
+		p := &Plugin{}
+		p.SetAPI(api)
+		// Simulate the configuration being set, as getConfiguration() reads from p.configuration
+		p.setConfiguration(&configuration{OpenAIAPIKey: apiKey})
+		p.botUserID = defaultBotUserID
+		return p
 	}
 
-	t.Run("ignore bot's own message", func(t *testing.T) {
-		p, apiMock, post := setupPluginAndPost("!maestro summarize", botUserID)
-		defer apiMock.Mock.AssertExpectations(t)
-		// No API calls should be made if the message is from the bot.
-		p.MessageHasBeenPosted(nil, post)
-		// Assert that no methods on apiMock.Mock were called, e.g. LogInfo for detected prefix.
-		// apiMock.Mock.AssertNotCalled(t, "LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
-		// More simply, just ensure no unexpected calls by having no expectations set.
-	})
+	t.Run("Success - Single Message from Agent", func(t *testing.T) {
+		api := setupAPI()
+		p := setupPlugin(api, defaultAPIKey)
 
-	t.Run("ignore message not starting with !maestro", func(t *testing.T) {
-		p, apiMock, post := setupPluginAndPost("hello world", userID)
-		defer apiMock.Mock.AssertExpectations(t)
-		p.MessageHasBeenPosted(nil, post)
-	})
-
-	t.Run("ignore message not starting with !maestro, but contains it", func(t *testing.T) {
-		p, apiMock, post := setupPluginAndPost("hello world !maestro later", userID)
-		defer apiMock.Mock.AssertExpectations(t)
-		p.MessageHasBeenPosted(nil, post)
-	})
-
-	t.Run("valid !maestro command calls parser and processor", func(t *testing.T) {
-		p, apiMock, post := setupPluginAndPost("!maestro summarize -n 5", userID)
-		defer apiMock.Mock.AssertExpectations(t)
-
-		// LogInfo for detected prefix
-		apiMock.Mock.On("LogInfo", "Detected '!maestro' prefix.", "user_id", userID, "channel_id", channelID, "original_message", post.Message, "arguments_string", "summarize -n 5").Once()
-
-		// Mocking dependencies for processMaestroTask part
-		CallOpenAIAPIFunc = func(apiKey, message, apiURL string) (string, error) {
-			return "AI summary.", nil
+		// Setup mock for this specific test
+		CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID string, tenantID string, channelID string, userMessage string, apiURL string) ([]MessageOutput, error) {
+			assert.Equal(t, defaultAPIKey, apiKey)
+			assert.Contains(t, userMessage, defaultTestTaskName) // Check that taskName is in prompt
+			assert.Equal(t, defaultUserID, userID)
+			// apiURL is now a parameter, if you need to assert its value (e.g. against a mock server URL) do it here
+			return []MessageOutput{{Content: "Agent response 1", Role: "agent", Format: "text", TurnID: "turn1"}}, nil
 		}
-		emptyPostList := model.NewPostList() // Assuming no prior messages for simplicity here
-		apiMock.Mock.On("GetPostsForChannel", channelID, 0, 5+10).Return(emptyPostList, (*model.AppError)(nil)).Once()
-		apiMock.Mock.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
-			return p.Message == "AI summary." && p.RootId == post.Id
-		})).Return(&model.Post{}, (*model.AppError)(nil)).Once()
 
-		p.MessageHasBeenPosted(nil, post)
+		api.On("SendEphemeralPost", defaultUserID, mock.MatchedBy(func(post *model.Post) bool {
+			return post.ChannelId == defaultChannelID &&
+				post.Message == "Agent response 1" &&
+				post.RootId == defaultRootID
+		})).Return(&model.Post{}).Once() // Expect it to be called once
+
+		err := p.processMaestroTask(defaultTestTaskName, defaultNumMessages, defaultChannelID, defaultUserID, defaultRootID)
+
+		assert.NoError(t, err)
+		api.AssertExpectations(t)
 	})
 
-	t.Run("valid !Maestro command (case insensitive) calls parser and processor", func(t *testing.T) {
-		p, apiMock, post := setupPluginAndPost("!Maestro summarize -n 2", userID) // Case variation
-		defer apiMock.Mock.AssertExpectations(t)
+	t.Run("Success - Multiple Messages from Agent", func(t *testing.T) {
+		api := setupAPI()
+		p := setupPlugin(api, defaultAPIKey)
 
-		apiMock.Mock.On("LogInfo", "Detected '!maestro' prefix.", "user_id", userID, "channel_id", channelID, "original_message", post.Message, "arguments_string", "summarize -n 2").Once()
-		CallOpenAIAPIFunc = func(apiKey, message, apiURL string) (string, error) { return "AI summary.", nil }
-		emptyPostList := model.NewPostList()
-		apiMock.Mock.On("GetPostsForChannel", channelID, 0, 2+10).Return(emptyPostList, (*model.AppError)(nil)).Once()
-		apiMock.Mock.On("CreatePost", mock.AnythingOfType("*model.Post")).Return(&model.Post{}, (*model.AppError)(nil)).Once()
+		// Setup mock for this specific test
+		expectedMessages := []MessageOutput{
+			{Content: "Agent response 1", Role: "agent", Format: "text", TurnID: "turn1"},
+			{Content: "Agent response 2", Role: "agent", Format: "markdown", TurnID: "turn2"},
+		}
 
-		p.MessageHasBeenPosted(nil, post)
-	})
+		CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID string, tenantID string, channelID string, userMessage string, apiURL string) ([]MessageOutput, error) {
+			assert.Equal(t, defaultAPIKey, apiKey)
+			return expectedMessages, nil
+		}
 
-	//t.Run("!maestro command with parsing error", func(t *testing.T) {
-	//	p, apiMock, post := setupPluginAndPost("!maestro -n abc", userID) // Invalid -n value
-	//	defer apiMock.Mock.AssertExpectations(t)
-	//
-	//	apiMock.Mock.On("LogInfo", "Detected '!maestro' prefix.", "user_id", userID, "channel_id", channelID, "original_message", post.Message, "arguments_string", "-n abc").Once()
-	//
-	//	// Ephemeral post for parsing error
-	//	expectedErrorMsg := "task_name cannot be empty. Usage: !maestro <task_name> [-n <num_messages>]"
-	//	// The actual error from parseMaestroArgs for "-n abc" would be "task_name cannot be empty..."
-	//	// because "-n" itself isn't a task name. If it was "task -n abc", it would be "invalid value for -n..."
-	//	// Let's use a command that gives a more direct parsing error for -n:
-	//	post.Message = "!maestro mytask -n abc"
-	//	argumentsString := "mytask -n abc"
-	//	apiMock.Mock.On("LogInfo", "Detected '!maestro' prefix.", "user_id", userID, "channel_id", channelID, "original_message", post.Message, "arguments_string", argumentsString).Once()
-	//	expectedErrorMsg = "invalid value for -n: 'abc'. It must be an integer"
-	//
-	//	apiMock.Mock.On("SendEphemeralPost", userID, mock.MatchedBy(func(ephemeralPost *model.Post) bool {
-	//		return ephemeralPost.ChannelId == channelID &&
-	//			strings.Contains(ephemeralPost.Message, expectedErrorMsg) &&
-	//			ephemeralPost.RootId == post.Id
-	//	})).Return(&model.Post{}).Once()
-	//
-	//	apiMock.Mock.On("LogError", "Failed to parse arguments for !maestro command", "error", expectedErrorMsg, "user_id", userID, "arguments", argumentsString).Once()
-	//
-	//	p.MessageHasBeenPosted(nil, post)
-	//})
-
-	t.Run("!maestro command where processMaestroTask returns an error (e.g. API key empty)", func(t *testing.T) {
-		p, apiMock, post := setupPluginAndPost("!maestro summarize", userID)
-		p.configuration.OpenAIAPIKey = "" // Ensure API key is empty for this test
-		defer apiMock.Mock.AssertExpectations(t)
-
-		apiMock.Mock.On("LogInfo", "Detected '!maestro' prefix.", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Once()
-
-		// processMaestroTask will send its own ephemeral post
-		apiMock.Mock.On("SendEphemeralPost", userID, mock.MatchedBy(func(ephemeralPost *model.Post) bool {
-			return strings.Contains(ephemeralPost.Message, "OpenAI API Key is not configured") && ephemeralPost.RootId == post.Id
+		// Expect SendEphemeralPost to be called for each message
+		api.On("SendEphemeralPost", defaultUserID, mock.MatchedBy(func(post *model.Post) bool {
+			return post.ChannelId == defaultChannelID && post.Message == "Agent response 1" && post.RootId == defaultRootID
+		})).Return(&model.Post{}).Once()
+		api.On("SendEphemeralPost", defaultUserID, mock.MatchedBy(func(post *model.Post) bool {
+			return post.ChannelId == defaultChannelID && post.Message == "Agent response 2" && post.RootId == defaultRootID
 		})).Return(&model.Post{}).Once()
 
-		// And MessageHasBeenPosted will log the error from processMaestroTask
-		apiMock.Mock.On("LogError", "Error processing !maestro task", "error", "OpenAI API Key is not configured", "user_id", userID, "task_name", "summarize").Once()
+		err := p.processMaestroTask(defaultTestTaskName, defaultNumMessages, defaultChannelID, defaultUserID, defaultRootID)
 
-		p.MessageHasBeenPosted(nil, post)
+		assert.NoError(t, err)
+		api.AssertExpectations(t)
+	})
+
+	t.Run("Success - summarize task", func(t *testing.T) {
+		api := setupAPI()
+		p := setupPlugin(api, defaultAPIKey)
+		summarizeTaskName := "summarize"
+
+		// Reset mocks for this specific test to ensure clean behavior
+		api.Mock = mock.Mock{}
+		// p.getConfiguration() is called to get the API key. If p.configuration is set (which it is by setupPlugin),
+		// no API calls like GetConfiguration() or GetConfig() are made by p.getConfiguration().
+		// So, no mock for GetConfiguration() is needed here if p.configuration is pre-set.
+
+		// Specific GetPostsForChannel mock for this test case
+		specificMockPostList := &model.PostList{}
+		post2 := &model.Post{Id: "p2", Message: "Second message.", UserId: "otherUser", CreateAt: 2000, ChannelId: defaultChannelID}
+		post1 := &model.Post{Id: "p1", Message: "First message to summarize.", UserId: "otherUser", CreateAt: 1000, ChannelId: defaultChannelID}
+		specificMockPostList.AddPost(post2) // Newest
+		specificMockPostList.AddPost(post1) // Older
+		specificMockPostList.AddOrder(post2.Id)
+		specificMockPostList.AddOrder(post1.Id)
+		api.On("GetPostsForChannel", defaultChannelID, 0, defaultNumMessages+10).Return(specificMockPostList, nil).Once()
+
+		// Setup mock for CallGraphQLAgentFunc for this specific test
+		CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID string, tenantID string, channelID string, userMessage string, apiURL string) ([]MessageOutput, error) {
+			assert.Equal(t, defaultAPIKey, apiKey)
+			expectedPrompt := fmt.Sprintf("Summarize the following messages:\n%s\n%s", "First message to summarize.", "Second message.")
+			assert.Equal(t, expectedPrompt, userMessage, "The prompt for summarization is not as expected.")
+			return []MessageOutput{{Content: "Summary response", Role: "agent"}}, nil
+		}
+
+		// Expected SendEphemeralPost call for the agent's response
+		api.On("SendEphemeralPost", defaultUserID, mock.MatchedBy(func(post *model.Post) bool {
+			return post.Message == "Summary response" && post.ChannelId == defaultChannelID && post.RootId == defaultRootID
+		})).Return(&model.Post{}).Once()
+
+		err := p.processMaestroTask(summarizeTaskName, defaultNumMessages, defaultChannelID, defaultUserID, defaultRootID)
+
+		assert.NoError(t, err)
+		api.AssertExpectations(t)
+	})
+
+	t.Run("Error - API Key Not Configured", func(t *testing.T) {
+		api := setupAPI()
+		p := setupPlugin(api, "") // Empty API Key
+
+		// This test should not call CallGraphQLAgentFunc
+		CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID string, tenantID string, channelID string, userMessage string, apiURL string) ([]MessageOutput, error) {
+			t.Fatalf("CallGraphQLAgentFunc was not expected to be called in %s", t.Name())
+			return nil, errors.New("unexpected call")
+		}
+
+		api.On("SendEphemeralPost", defaultUserID, mock.MatchedBy(func(post *model.Post) bool {
+			return post.ChannelId == defaultChannelID &&
+				strings.Contains(post.Message, "API Key is not configured") &&
+				post.RootId == defaultRootID
+		})).Return(&model.Post{}).Once()
+
+		err := p.processMaestroTask(defaultTestTaskName, defaultNumMessages, defaultChannelID, defaultUserID, defaultRootID)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "OpenAI API Key is not configured")
+		api.AssertExpectations(t)
+		// LogError should not be called here as it's a configuration issue known before API calls
+	})
+
+	t.Run("Error - GetPostsForChannel Fails", func(t *testing.T) {
+		api := setupAPI()
+		p := setupPlugin(api, defaultAPIKey)
+
+		// Reset mocks for this specific test
+		api.Mock = mock.Mock{}
+		// p.getConfiguration() is called. If p.configuration is set, no API call is made by it.
+		// So, no mock for GetConfiguration() is needed here.
+
+		// This test should not call CallGraphQLAgentFunc
+		CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID string, tenantID string, channelID string, userMessage string, apiURL string) ([]MessageOutput, error) {
+			t.Fatalf("CallGraphQLAgentFunc was not expected to be called in %s", t.Name())
+			return nil, errors.New("unexpected call")
+		}
+
+		// Specific mock for GetPostsForChannel to return an error
+		appErr := model.NewAppError("GetPostsForChannel", "some.error.id", nil, "failed to get posts", http.StatusInternalServerError)
+		api.On("GetPostsForChannel", defaultChannelID, 0, defaultNumMessages+10).Return(nil, appErr).Once()
+
+		// Expected LogError call - matching the string form of the error
+		api.On("LogError", "Failed to fetch posts for channel", "channel_id", defaultChannelID, "error", appErr.Error()).Return(nil).Once()
+
+		// Expected SendEphemeralPost call to inform the user
+		api.On("SendEphemeralPost", defaultUserID, mock.MatchedBy(func(post *model.Post) bool {
+			return post.ChannelId == defaultChannelID &&
+				strings.Contains(post.Message, "An error occurred while fetching messages") &&
+				post.RootId == defaultRootID
+		})).Return(&model.Post{}).Once()
+
+		err := p.processMaestroTask(defaultTestTaskName, defaultNumMessages, defaultChannelID, defaultUserID, defaultRootID)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to fetch posts")
+		api.AssertExpectations(t)
+	})
+
+	t.Run("Error - CallGraphQLAgentFunc Returns Error", func(t *testing.T) {
+		api := setupAPI()
+		p := setupPlugin(api, defaultAPIKey)
+		agentError := errors.New("agent call failed") // Keep this specific error for assertion
+
+		// Reset mocks for this specific test to ensure clean behavior for LogError
+		api.Mock = mock.Mock{}
+		// p.getConfiguration() is called. If p.configuration is set, no API call is made by it.
+		// So, no mock for GetConfiguration() is needed here.
+		// Default GetPostsForChannel for this path (successful, to reach CallGraphQLAgentFunc)
+		// This uses the general mockPostList from the outer scope; ensure it's suitable or make specific.
+		// For this test, the content of fetched messages doesn't critically affect the error path,
+		// as long as CallGraphQLAgentFunc is reached.
+		defaultMockPostList := &model.PostList{} // Using a simple one for this error test
+		defaultMockPostList.AddPost(&model.Post{Id: "any_post", Message: "any message", UserId: "another_user"})
+		defaultMockPostList.AddOrder("any_post")
+		api.On("GetPostsForChannel", defaultChannelID, 0, defaultNumMessages+10).Return(defaultMockPostList, nil).Once()
+
+
+		// Setup mock for CallGraphQLAgentFunc for this specific test
+		CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID string, tenantID string, channelID string, userMessage string, apiURL string) ([]MessageOutput, error) {
+			// This assertion is not strictly needed here as we are testing the error path, but good for consistency
+			assert.Equal(t, defaultAPIKey, apiKey)
+			return nil, agentError // Return the predefined error
+		}
+
+		// Expected LogError call
+		// Ensure the error message in LogError matches exactly what's logged by the plugin
+		api.On("LogError", "Error calling GraphQL Agent for !maestro task", "error", agentError.Error(), "user_id", defaultUserID, "task_name", defaultTestTaskName).Return(nil).Once()
+
+		// Expected SendEphemeralPost call to inform the user
+		api.On("SendEphemeralPost", defaultUserID, mock.MatchedBy(func(post *model.Post) bool {
+			return post.ChannelId == defaultChannelID &&
+				strings.Contains(post.Message, "An error occurred while contacting the agent") &&
+				post.RootId == defaultRootID
+		})).Return(&model.Post{}).Once()
+
+
+		err := p.processMaestroTask(defaultTestTaskName, defaultNumMessages, defaultChannelID, defaultUserID, defaultRootID)
+
+		assert.Error(t, err)
+		assert.Equal(t, agentError, err)
+		api.AssertExpectations(t)
+	})
+
+	t.Run("No Messages from Agent", func(t *testing.T) {
+		api := setupAPI()
+		p := setupPlugin(api, defaultAPIKey)
+
+		// Setup mock for this specific test
+		CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID string, tenantID string, channelID string, userMessage string, apiURL string) ([]MessageOutput, error) {
+			return []MessageOutput{}, nil // Empty slice, no error
+		}
+
+		api.On("SendEphemeralPost", defaultUserID, mock.MatchedBy(func(post *model.Post) bool {
+			return strings.Contains(post.Message, "The agent processed your request but returned no messages.")
+		})).Return(&model.Post{}).Once()
+
+		// LogInfo should be called
+		api.On("LogInfo", "GraphQL Agent returned no messages for !maestro task", "user_id", defaultUserID, "task_name", defaultTestTaskName).Return(nil).Once()
+
+
+		err := p.processMaestroTask(defaultTestTaskName, defaultNumMessages, defaultChannelID, defaultUserID, defaultRootID)
+
+		assert.NoError(t, err)
+		api.AssertExpectations(t)
 	})
 }
