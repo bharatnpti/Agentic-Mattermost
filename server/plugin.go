@@ -80,24 +80,26 @@ func (p *Plugin) OnActivate() error {
 		GetOpenAIAPIKey: func() string {
 			return p.getConfiguration().OpenAIAPIKey
 		},
-		CallGraphQLAgentFunc: func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, userMessage string, apiURL string) ([]command.AgentMessageOutput, error) {
-			// Call the global CallGraphQLAgentFunc from the main package
-			mainMessages, err := CallGraphQLAgentFunc(apiKey, conversationID, userID, tenantID, channelIDSystemContext, userMessage, apiURL)
-			if err != nil {
-				return nil, err
-			}
-			// Convert []main.MessageOutput to []command.AgentMessageOutput
-			var commandMessages []command.AgentMessageOutput
-			for _, msg := range mainMessages {
-				commandMessages = append(commandMessages, command.AgentMessageOutput{
-					Content: msg.Content,
-					Format:  msg.Format,
-					Role:    msg.Role,
-					TurnID:  msg.TurnID,
-				})
-			}
-			return commandMessages, nil
-		},
+		//CallGraphQLAgentFunc: func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, userMessage string, apiURL string) ([]command.AgentMessageOutput, error) {
+		//	// Call the global CallGraphQLAgentFunc from the main package
+		//	mainMessages, err := CallGraphQLAgentFunc(apiKey, conversationID, userID, tenantID, channelIDSystemContext, userMessage, "http://localhost:8080/graphiql")
+		//	if err != nil {
+		//		return nil, err
+		//	}
+		//	// Convert []main.MessageOutput to []command.AgentMessageOutput
+		//	var commandMessages []command.AgentMessageOutput
+		//	//for _, msg := range mainMessages {
+		//	//	commandMessages = append(commandMessages,
+		//	output := command.AgentMessageOutput{
+		//		Content: mainMessages,
+		//		Format:  "text",
+		//		Role:    "assistant",
+		//		TurnID:  "TurnID",
+		//	}
+		//	//)
+		//	//}
+		//	return commandMessages, nil
+		//},
 		// OpenAIAPIURL field removed
 		ParseArguments: func(argsString string) (string, int, error) {
 			return p.parseMaestroArgs(argsString)
@@ -198,6 +200,9 @@ func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
 // parseMaestroArgs parses the arguments for the !maestro command.
 // It's adapted from parseOpenAICommandArgs.
 func (p *Plugin) parseMaestroArgs(argsString string) (taskName string, numMessages int, err error) {
+
+	p.API.LogInfo("parseMaestroArgs: ", argsString)
+
 	fields := strings.Fields(argsString)
 	// For !maestro, the argsString is everything after "!maestro ".
 	// So, fields[0] is the first part of the task_name or -n.
@@ -265,6 +270,7 @@ func (p *Plugin) parseMaestroArgs(argsString string) (taskName string, numMessag
 
 // processMaestroTask contains the core logic for handling a maestro task.
 func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID string, userID string, rootID string) error {
+	p.API.LogInfo("processMaestroTask: ", taskName)
 	if taskName == "" { // Should be caught by parser, but defense in depth
 		p.API.SendEphemeralPost(userID, &model.Post{
 			ChannelId: channelID,
@@ -272,16 +278,6 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 			RootId:    rootID,
 		})
 		return fmt.Errorf("taskName is empty")
-	}
-
-	apiKey := p.getConfiguration().OpenAIAPIKey
-	if apiKey == "" {
-		p.API.SendEphemeralPost(userID, &model.Post{
-			ChannelId: channelID,
-			Message:   "The OpenAI API Key is not configured. Please contact your system administrator.",
-			RootId:    rootID,
-		})
-		return fmt.Errorf("OpenAI API Key is not configured")
 	}
 
 	// Fetch messages
@@ -299,6 +295,8 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 		})
 		return errors.Wrap(appErr, "failed to fetch posts")
 	}
+
+	p.API.LogInfo("Posts fetched for channel: ", postList)
 
 	var fetchedMessages []string
 	count := 0
@@ -324,6 +322,9 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 	// The above loop already limits to numMessages.
 
 	messagesString := strings.Join(fetchedMessages, "\n")
+
+	p.API.LogInfo("messagesString: ", messagesString)
+
 	var finalPrompt string
 	if strings.ToLower(taskName) == "summarize" {
 		finalPrompt = fmt.Sprintf("Summarize the following messages:\n%s", messagesString)
@@ -331,13 +332,15 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 		finalPrompt = fmt.Sprintf("User query: %s\n%s", taskName, messagesString)
 	}
 
+	p.API.LogInfo("finalPrompt: ", finalPrompt)
+
 	// Parameters for GraphQL call
 	graphQLConversationID := "1"
 	graphQLTenantID := "de"
 	graphQLSystemChannelID := "ONEAPPWEB" // Specific value for GraphQL system context
 
 	// The 'finalPrompt' is the actual message content to be sent to the agent.
-	messages, err := CallGraphQLAgentFunc(apiKey, graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, finalPrompt, GraphQLAgentAPIURL) // Pass the API URL
+	messages, err := CallGraphQLAgentFunc("apiKey", graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, finalPrompt, GraphQLAgentAPIURL) // Pass the API URL
 	if err != nil {
 		p.API.LogError("Error calling GraphQL Agent for !maestro task", "error", err.Error(), "user_id", userID, "task_name", taskName)
 		p.API.SendEphemeralPost(userID, &model.Post{
@@ -347,6 +350,8 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 		})
 		return err
 	}
+
+	p.API.LogInfo("response received", "response", messages)
 
 	if len(messages) == 0 {
 		p.API.LogInfo("GraphQL Agent returned no messages for !maestro task", "user_id", userID, "task_name", taskName)
@@ -359,15 +364,26 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 		return nil
 	}
 
-	// Post each message as an ephemeral post
-	for _, msg := range messages {
-		ephemeralPost := &model.Post{
-			ChannelId: channelID,
-			Message:   msg.Content,
-			RootId:    rootID, // Thread to the original !maestro message
-		}
-		p.API.SendEphemeralPost(userID, ephemeralPost)
+	message := messages
+
+	responsePost := &model.Post{
+		UserId:    p.botUserID,
+		ChannelId: channelID,
+		Message:   message,
+		RootId:    rootID, // Thread the response to the !maestro message
 	}
+
+	p.API.SendEphemeralPost(userID, responsePost)
+
+	// Post each message as an ephemeral post
+	//for _, msg := range messages {
+	//	ephemeralPost := &model.Post{
+	//		ChannelId: channelID,
+	//		Message:   msg,
+	//		RootId:    rootID, // Thread to the original !maestro message
+	//	}
+	//	p.API.SendEphemeralPost(userID, ephemeralPost)
+	//}
 
 	return nil
 }

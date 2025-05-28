@@ -3,6 +3,10 @@ package main
 import (
 	"context" // Required by machinebox/graphql
 	"fmt"
+	"log"
+	"strings"
+	"time"
+
 	// "bytes" // May no longer be needed by CallGraphQLAgentFunc
 	// "encoding/json" // May no longer be needed for top-level request/response marshalling by CallGraphQLAgentFunc
 	// "net/http" // May no longer be needed by CallGraphQLAgentFunc
@@ -15,11 +19,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/url"
+
+	"github.com/gorilla/websocket"
 )
 
 // OpenAIRequest defines the structure for the OpenAI API request.
 type OpenAIRequest struct {
-	Model    string        `json:"model"`
+	Model    string          `json:"model"`
 	Messages []OpenAIMessage `json:"messages"`
 }
 
@@ -107,9 +114,9 @@ var CallOpenAIAPIFunc = func(apiKey string, message string, apiURL string) (stri
 // The apiKey parameter is kept for now for structural consistency but might not be used
 // if the GraphQL endpoint does not require bearer token authentication in this manner.
 // Added apiURL parameter for testability.
-var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, userMessage string, apiURL string) ([]MessageOutput, error) {
+var CallGraphQLAgentFunc_backup = func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, userMessage string, apiURL string) ([]MessageOutput, error) {
 	// Create a new GraphQL client
-	client := graphql.NewClient(apiURL) // Use the passed apiURL
+	client := graphql.NewClient("ws://localhost:8080/subscriptions") // Use the passed apiURL
 
 	// The original query is a subscription.
 	// Note: machinebox/graphql primarily sends queries/mutations over HTTP POST.
@@ -203,9 +210,9 @@ var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID str
 // AgentRequestInput defines the structure for the 'request' input object in the GraphQL query.
 type AgentRequestInput struct {
 	ConversationContext ConversationContextInput `json:"conversationContext"`
-	SystemContext       []SystemContextInput   `json:"systemContext"`
-	UserContext         UserContextInput       `json:"userContext"`
-	Messages            []MessageInput         `json:"messages"`
+	SystemContext       []SystemContextInput     `json:"systemContext"`
+	UserContext         UserContextInput         `json:"userContext"`
+	Messages            []MessageInput           `json:"messages"`
 }
 
 // ConversationContextInput defines the structure for the 'conversationContext' input object.
@@ -268,17 +275,412 @@ type AgentResponseData struct {
 	Messages              []MessageOutput       `json:"messages"`
 }
 
-// AnonymizationEntity defines the structure for an anonymization entity.
-type AnonymizationEntity struct {
-	Replacement string `json:"replacement"`
-	Type        string `json:"type"`
-	Value       string `json:"value"`
-}
-
 // MessageOutput defines the structure for a message in the agent response.
 type MessageOutput struct {
 	Content string `json:"content"`
 	Format  string `json:"format"`
 	Role    string `json:"role"`
 	TurnID  string `json:"turnId"`
+}
+
+//var CallGraphQLAgentFunc2 = func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, userMessage string, apiURL string) ([]MessageOutput, error) {
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+//	defer cancel()
+//
+//	// Create client
+//	client := NewGraphQLSubscriptionClient("ws://localhost:8080/subscriptions")
+//	defer client.Close()
+//
+//	// Connect
+//	if err := client.Connect(ctx); err != nil {
+//		log.Fatal("Connection failed:", err)
+//	}
+//
+//	fmt.Println("Connected to GraphQL subscription endpoint")
+//
+//	contentChan := make(chan string, 1)
+//
+//	err := client.Subscribe("agent-subscription", query, nil, func(payload interface{}) {
+//		payloadBytes, _ := json.Marshal(payload)
+//		var response AgentResponse
+//		if err := json.Unmarshal(payloadBytes, &response); err != nil {
+//			log.Println("unmarshal error:", err)
+//			return
+//		}
+//
+//		message := handleAgentResponse(response)
+//		if message.Content != "" {
+//			select {
+//			case contentChan <- message.Content:
+//			default:
+//			}
+//		}
+//	})
+//
+//	if err != nil {
+//		log.Fatal("Subscription failed:", err)
+//	}
+//
+//	fmt.Println("Subscription started, listening for messages...")
+//
+//	go func() {
+//		if err := client.Listen(ctx); err != nil && err != context.DeadlineExceeded {
+//			log.Printf("Listen error: %v", err)
+//		}
+//	}()
+//
+//	select {
+//	case content := <-contentChan:
+//		return content, nil
+//	case <-ctx.Done():
+//		return "", fmt.Errorf("timeout waiting for first message")
+//	}
+//
+//}
+
+// escapeString handles any special characters in input strings for safety
+func escapeString(str string) string {
+	return strings.ReplaceAll(str, `"`, `\"`)
+}
+
+var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, userMessage string, apiURL string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client := NewGraphQLSubscriptionClient("ws://localhost:8080/subscriptions")
+	defer client.Close()
+
+	if err := client.Connect(ctx); err != nil {
+		log.Fatal("Connection failed:", err)
+	}
+
+	fmt.Println("Connected to GraphQL subscription endpoint")
+
+	// Channel to receive first message content
+	contentChan := make(chan string, 1)
+
+	messages := []Message{
+		{Content: "Can I cancel my contract?", Format: "text", Role: "user"},
+		{Content: "Please let me know the process.", Format: "text", Role: "user"},
+	}
+
+	var messageEntries []string
+	for _, msg := range messages {
+		messageEntry := fmt.Sprintf(`{
+			content: "%s",
+			format: "%s",
+			role: "%s"
+		}`, escapeString(msg.Content), escapeString(msg.Format), escapeString(msg.Role))
+		messageEntries = append(messageEntries, messageEntry)
+	}
+	messageBlock := strings.Join(messageEntries, ",\n")
+
+	query := fmt.Sprintf(`subscription {
+	agent(request: {
+		conversationContext: {
+			conversationId: "%s"
+		},
+		systemContext: [
+			{
+				key: "channelId",
+				value: "%s"
+			},
+			{
+				key: "tenantId",
+				value: "%s"
+			}
+		],
+		userContext: {
+			userId: "%s",
+			profile: []
+		},
+		messages: [
+			%s
+		]
+	}) {
+		anonymizationEntities {
+			replacement,
+			type,
+			value
+		},
+		messages {
+			content,
+			format,
+			role,
+			turnId
+		}
+	}
+}`, escapeString(conversationID), escapeString(channelIDSystemContext), escapeString(tenantID), escapeString(userID), messageBlock)
+
+	fmt.Println(query)
+
+	err := client.Subscribe("agent-subscription", query, nil, func(payload interface{}) {
+		payloadBytes, _ := json.Marshal(payload)
+		var response AgentResponse
+		if err := json.Unmarshal(payloadBytes, &response); err != nil {
+			log.Println("unmarshal error:", err)
+			return
+		}
+
+		message := handleAgentResponse(response)
+		if message.Content != "" {
+			select {
+			case contentChan <- message.Content:
+			default:
+			}
+		}
+	})
+
+	if err != nil {
+		log.Fatal("Subscription failed:", err)
+	}
+
+	fmt.Println("Subscription started, listening for messages...")
+
+	go func() {
+		if err := client.Listen(ctx); err != nil && err != context.DeadlineExceeded {
+			log.Printf("Listen error: %v", err)
+		}
+	}()
+
+	// Wait for first message content or timeout
+	select {
+	case content := <-contentChan:
+		return content, nil
+	case <-ctx.Done():
+		return "", fmt.Errorf("timeout waiting for first message")
+	}
+}
+
+func handleAgentResponse(response AgentResponse) *Message {
+	if len(response.Errors) > 0 {
+		for _, err := range response.Errors {
+			log.Printf("GraphQL Error: %s\n", err.Message)
+		}
+		return nil
+	}
+
+	fmt.Println("=== Agent Response ===")
+
+	// Print anonymization entities
+	if len(response.Data.Agent.AnonymizationEntities) > 0 {
+		fmt.Println("Anonymization Entities:")
+		for _, entity := range response.Data.Agent.AnonymizationEntities {
+			fmt.Printf("  Type: %s, Value: %s, Replacement: %s\n",
+				entity.Type, entity.Value, entity.Replacement)
+		}
+	}
+
+	// Print messages
+	if len(response.Data.Agent.Messages) > 0 {
+		firstMsg := &response.Data.Agent.Messages[0]
+		fmt.Println("Messages:")
+		for _, msg := range response.Data.Agent.Messages {
+			fmt.Printf("  Role: %s, Format: %s, TurnID: %s\n",
+				msg.Role, msg.Format, msg.TurnID)
+			fmt.Printf("  Content: %s\n", msg.Content)
+			fmt.Println("  ---")
+		}
+		return firstMsg
+	}
+
+	fmt.Println("======================")
+	return nil
+}
+
+func NewGraphQLSubscriptionClient(wsURL string) *GraphQLSubscriptionClient {
+	return &GraphQLSubscriptionClient{
+		url:       wsURL,
+		callbacks: make(map[string]func(interface{})),
+	}
+}
+
+func (c *GraphQLSubscriptionClient) Connect(ctx context.Context) error {
+	u, err := url.Parse(c.url)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	// Set up WebSocket headers with GraphQL subprotocols
+	dialer := websocket.Dialer{
+		Subprotocols: []string{"graphql-transport-ws", "graphql-ws"},
+	}
+
+	conn, resp, err := dialer.DialContext(ctx, u.String(), nil)
+	if err != nil {
+		return fmt.Errorf("dial error: %w", err)
+	}
+
+	c.conn = conn
+
+	// Determine which protocol was selected
+	if resp != nil && len(resp.Header.Get("Sec-WebSocket-Protocol")) > 0 {
+		c.protocol = resp.Header.Get("Sec-WebSocket-Protocol")
+	} else {
+		c.protocol = "graphql-ws" // Default fallback
+	}
+
+	fmt.Printf("Using protocol: %s\n", c.protocol)
+
+	// Initialize connection based on protocol
+	var initMsg GraphQLMessage
+	if c.protocol == "graphql-transport-ws" {
+		initMsg = GraphQLMessage{
+			Type: "connection_init",
+			Payload: map[string]interface{}{
+				"connectionParams": map[string]interface{}{},
+			},
+		}
+	} else {
+		// graphql-ws protocol
+		initMsg = GraphQLMessage{
+			Type:    "connection_init",
+			Payload: map[string]interface{}{},
+		}
+	}
+
+	if err := c.sendMessage(initMsg); err != nil {
+		return fmt.Errorf("init error: %w", err)
+	}
+
+	// Wait for acknowledgment
+	var ackMsg GraphQLMessage
+	if err := c.conn.ReadJSON(&ackMsg); err != nil {
+		return fmt.Errorf("ack read error: %w", err)
+	}
+
+	expectedAckType := "connection_ack"
+	if c.protocol == "graphql-transport-ws" {
+		expectedAckType = "connection_ack"
+	}
+
+	if ackMsg.Type != expectedAckType {
+		return fmt.Errorf("expected %s, got: %s", expectedAckType, ackMsg.Type)
+	}
+
+	return nil
+}
+
+func (c *GraphQLSubscriptionClient) Close() error {
+	if c.conn != nil {
+		c.sendMessage(GraphQLMessage{Type: "connection_terminate"})
+		return c.conn.Close()
+	}
+	return nil
+}
+
+func (c *GraphQLSubscriptionClient) sendMessage(msg GraphQLMessage) error {
+	fmt.Printf("Sending: %s\n", msg.Type)
+	return c.conn.WriteJSON(msg)
+}
+
+func (c *GraphQLSubscriptionClient) Subscribe(subscriptionID, query string, variables map[string]interface{}, callback func(interface{})) error {
+	c.callbacks[subscriptionID] = callback
+
+	var msgType string
+	if c.protocol == "graphql-transport-ws" {
+		msgType = "subscribe"
+	} else {
+		msgType = "start"
+	}
+
+	msg := GraphQLMessage{
+		ID:   subscriptionID,
+		Type: msgType,
+		Payload: SubscriptionPayload{
+			Query:     query,
+			Variables: variables,
+		},
+	}
+
+	return c.sendMessage(msg)
+}
+
+type SubscriptionPayload struct {
+	Query     string                 `json:"query"`
+	Variables map[string]interface{} `json:"variables,omitempty"`
+}
+
+type GraphQLMessage struct {
+	ID      string      `json:"id,omitempty"`
+	Type    string      `json:"type"`
+	Payload interface{} `json:"payload,omitempty"`
+}
+
+func (c *GraphQLSubscriptionClient) Listen(ctx context.Context) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			var msg GraphQLMessage
+			if err := c.conn.ReadJSON(&msg); err != nil {
+				return fmt.Errorf("read error: %w", err)
+			}
+
+			c.handleMessage(msg)
+		}
+	}
+}
+
+func (c *GraphQLSubscriptionClient) handleMessage(msg GraphQLMessage) {
+	switch msg.Type {
+	case "next", "data": // Handle both protocols
+		if callback, exists := c.callbacks[msg.ID]; exists {
+			callback(msg.Payload)
+		}
+	case "error":
+		log.Printf("Subscription error for ID %s: %v", msg.ID, msg.Payload)
+	case "complete":
+		log.Printf("Subscription %s completed", msg.ID)
+		delete(c.callbacks, msg.ID)
+	case "ping":
+		// Send pong for graphql-transport-ws
+		c.sendMessage(GraphQLMessage{Type: "pong"})
+	case "pong":
+		// Pong received, ignore
+	case "ka":
+		// Keep-alive message for graphql-ws, ignore
+	default:
+		log.Printf("Unknown message type: %s", msg.Type)
+	}
+}
+
+type GraphQLSubscriptionClient struct {
+	conn      *websocket.Conn
+	url       string
+	callbacks map[string]func(interface{})
+	protocol  string // Track which protocol is being used
+}
+
+type AgentResponse struct {
+	Data   AgentData `json:"data"`
+	Errors []Error   `json:"errors,omitempty"`
+}
+
+type AgentData struct {
+	Agent Agent `json:"agent"`
+}
+
+type Agent struct {
+	AnonymizationEntities []AnonymizationEntity `json:"anonymizationEntities"`
+	Messages              []Message             `json:"messages"`
+}
+
+type AnonymizationEntity struct {
+	Replacement string `json:"replacement"`
+	Type        string `json:"type"`
+	Value       string `json:"value"`
+}
+
+type Message struct {
+	Content string `json:"content"`
+	Format  string `json:"format"`
+	Role    string `json:"role"`
+	TurnID  string `json:"turnId"`
+}
+
+type Error struct {
+	Message string `json:"message"`
 }
