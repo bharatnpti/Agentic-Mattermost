@@ -348,7 +348,7 @@ var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID str
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	client := NewGraphQLSubscriptionClient("ws://localhost:8080/subscriptions")
+	client := NewGraphQLSubscriptionClient(apiURL) // Use the apiURL parameter
 	defer client.Close()
 
 	if err := client.Connect(ctx); err != nil {

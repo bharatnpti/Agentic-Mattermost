@@ -339,10 +339,25 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 	graphQLTenantID := "de"
 	graphQLSystemChannelID := "ONEAPPWEB" // Specific value for GraphQL system context
 
+	// Get the GraphQL Agent WebSocket URL from the configuration
+	config := p.getConfiguration()
+	webSocketURL := config.GraphQLAgentWebSocketURL
+
+	// Check if the WebSocket URL is configured
+	if webSocketURL == "" {
+		p.API.LogError("GraphQL Agent WebSocket URL is not configured.", "user_id", userID, "task_name", taskName)
+		p.API.SendEphemeralPost(userID, &model.Post{
+			ChannelId: channelID,
+			Message:   "The GraphQL Agent WebSocket URL is not configured. Please contact an administrator.",
+			RootId:    rootID,
+		})
+		return fmt.Errorf("GraphQL Agent WebSocket URL is not configured")
+	}
+
 	// The 'finalPrompt' is the actual message content to be sent to the agent.
-	messages, err := CallGraphQLAgentFunc("apiKey", graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, finalPrompt, GraphQLAgentAPIURL) // Pass the API URL
+	messages, err := CallGraphQLAgentFunc("apiKey", graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, finalPrompt, webSocketURL) // Use configured WebSocket URL
 	if err != nil {
-		p.API.LogError("Error calling GraphQL Agent for !maestro task", "error", err.Error(), "user_id", userID, "task_name", taskName)
+		p.API.LogError("Error calling GraphQL Agent for !maestro task", "error", err.Error(), "user_id", userID, "task_name", taskName, "webSocketURL", webSocketURL)
 		p.API.SendEphemeralPost(userID, &model.Post{
 			ChannelId: channelID, // Mattermost channel ID for the ephemeral post
 			Message:   "An error occurred while contacting the agent. Please try again later or contact an administrator.",
