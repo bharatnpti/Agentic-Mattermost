@@ -30,6 +30,15 @@
                 "placeholder": "",
                 "default": "",
                 "secret": true
+            },
+            {
+                "key": "GraphQLAgentWebSocketURL",
+                "display_name": "GraphQL Agent WebSocket URL",
+                "type": "text",
+                "help_text": "The WebSocket URL for the GraphQL agent (e.g., ws://localhost:8080/subscriptions). This is required for the !maestro commands to connect to the agent.",
+                "placeholder": "ws://example.com/subscriptions",
+                "default": "",
+                "secret": false
             }
         ]
     }
