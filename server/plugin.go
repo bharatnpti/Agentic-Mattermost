@@ -201,7 +201,7 @@ func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
 // It's adapted from parseOpenAICommandArgs.
 func (p *Plugin) parseMaestroArgs(argsString string) (taskName string, numMessages int, err error) {
 
-	p.API.LogInfo("parseMaestroArgs: ", argsString)
+	p.API.LogInfo("Parsing Maestro arguments", "args", argsString)
 
 	fields := strings.Fields(argsString)
 	// For !maestro, the argsString is everything after "!maestro ".
@@ -270,7 +270,7 @@ func (p *Plugin) parseMaestroArgs(argsString string) (taskName string, numMessag
 
 // processMaestroTask contains the core logic for handling a maestro task.
 func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID string, userID string, rootID string) error {
-	p.API.LogInfo("processMaestroTask: ", taskName)
+	p.API.LogInfo("Processing Maestro task", "taskName", taskName)
 	if taskName == "" { // Should be caught by parser, but defense in depth
 		p.API.SendEphemeralPost(userID, &model.Post{
 			ChannelId: channelID,
@@ -296,7 +296,7 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 		return errors.Wrap(appErr, "failed to fetch posts")
 	}
 
-	p.API.LogInfo("Posts fetched for channel: ", postList)
+	p.API.LogInfo("Posts fetched for channel", "channelID", channelID, "postListOrderLength", len(postList.Order), "postListPostsLength", len(postList.Posts))
 
 	var fetchedMessages []string
 	count := 0
@@ -323,7 +323,7 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 
 	messagesString := strings.Join(fetchedMessages, "\n")
 
-	p.API.LogInfo("messagesString: ", messagesString)
+	p.API.LogInfo("Constructed messages string", "length", len(messagesString))
 
 	var finalPrompt string
 	if strings.ToLower(taskName) == "summarize" {
@@ -332,7 +332,7 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 		finalPrompt = fmt.Sprintf("User query: %s\n%s", taskName, messagesString)
 	}
 
-	p.API.LogInfo("finalPrompt: ", finalPrompt)
+	p.API.LogInfo("Constructed final prompt", "length", len(finalPrompt))
 
 	// Parameters for GraphQL call
 	graphQLConversationID := "1"
@@ -351,7 +351,7 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 		return err
 	}
 
-	p.API.LogInfo("response received", "response", messages)
+	p.API.LogInfo("Response received from GraphQL agent", "messageContent", messages)
 
 	if len(messages) == 0 {
 		p.API.LogInfo("GraphQL Agent returned no messages for !maestro task", "user_id", userID, "task_name", taskName)
