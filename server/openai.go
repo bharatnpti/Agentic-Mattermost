@@ -340,11 +340,11 @@ type MessageOutput struct {
 //}
 
 // escapeString handles any special characters in input strings for safety
-func escapeString(str string) string {
-	return strings.ReplaceAll(str, `"`, `\"`)
+func escapeString(input string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(input, `"`, `\"`), "\n", "\\n")
 }
 
-var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, userMessage string, apiURL string) (string, error) {
+var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -360,21 +360,32 @@ var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID str
 	// Channel to receive first message content
 	contentChan := make(chan string, 1)
 
-	messages := []Message{
-		{Content: "Can I cancel my contract?", Format: "text", Role: "user"},
-		{Content: "Please let me know the process.", Format: "text", Role: "user"},
+	// Construct the messageBlock using the userMessage parameter.
+	// The GraphQL query expects an array of messages, so we format a single message entry.
+	//messageBlock := fmt.Sprintf(`{
+	//	content: "%s",
+	//	format: "text",
+	//	role: "user"
+	//}`, escapeString(userMessage))
+
+	var buffer bytes.Buffer
+	buffer.WriteString("[")
+
+	for i, msg := range messages {
+		buffer.WriteString(fmt.Sprintf(`{
+		content: "%s",
+		format: "%s",
+		role: "%s",
+		turnId: "%s"
+	}`, escapeString(msg.Content), escapeString(msg.Format), escapeString(msg.Role), escapeString(msg.TurnID)))
+		if i < len(messages)-1 {
+			buffer.WriteString(",")
+		}
 	}
 
-	var messageEntries []string
-	for _, msg := range messages {
-		messageEntry := fmt.Sprintf(`{
-			content: "%s",
-			format: "%s",
-			role: "%s"
-		}`, escapeString(msg.Content), escapeString(msg.Format), escapeString(msg.Role))
-		messageEntries = append(messageEntries, messageEntry)
-	}
-	messageBlock := strings.Join(messageEntries, ",\n")
+	buffer.WriteString("]")
+
+	messageBlock := buffer.String()
 
 	query := fmt.Sprintf(`subscription {
 	agent(request: {
@@ -395,9 +406,8 @@ var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID str
 			userId: "%s",
 			profile: []
 		},
-		messages: [
+		messages:
 			%s
-		]
 	}) {
 		anonymizationEntities {
 			replacement,

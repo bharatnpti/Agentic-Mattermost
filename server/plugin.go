@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -178,7 +179,7 @@ func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
 
 	// 4. Placeholder for parsing and calling refactored logic
 	// 4. Placeholder for parsing and calling refactored logic
-	taskName, numMessages, err := p.parseMaestroArgs(argumentsString)
+	taskName, numMessages, err := p.parseMaestroArgsNewFormat(argumentsString)
 	if err != nil {
 		p.API.SendEphemeralPost(post.UserId, &model.Post{
 			ChannelId: post.ChannelId,
@@ -268,17 +269,45 @@ func (p *Plugin) parseMaestroArgs(argsString string) (taskName string, numMessag
 	return taskName, numMessages, nil
 }
 
+func (p *Plugin) parseMaestroArgsNewFormat(argsString string) (taskText string, numMessages int, err error) {
+	p.API.LogInfo("Parsing Maestro arguments", "args", argsString)
+
+	fields := strings.Fields(argsString)
+	numMessages = command.DefaultNumMessages // Default value
+	taskTextStart := 0
+
+	// Check if -n is the first argument and valid
+	if len(fields) >= 2 && fields[0] == "-n" {
+		val, convErr := strconv.Atoi(fields[1])
+		if convErr != nil {
+			return "", 0, fmt.Errorf("invalid value for -n: '%s'. It must be an integer", fields[1])
+		}
+		if val <= 0 {
+			return "", 0, fmt.Errorf("invalid value for -n: %d. It must be a positive integer", val)
+		}
+		numMessages = val
+		taskTextStart = 2
+	}
+
+	// If more arguments follow -n, treat them as the task text
+	if len(fields) > taskTextStart {
+		taskText = strings.Join(fields[taskTextStart:], " ")
+	}
+
+	return taskText, numMessages, nil
+}
+
 // processMaestroTask contains the core logic for handling a maestro task.
 func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID string, userID string, rootID string) error {
 	p.API.LogInfo("Processing Maestro task", "taskName", taskName)
-	if taskName == "" { // Should be caught by parser, but defense in depth
-		p.API.SendEphemeralPost(userID, &model.Post{
-			ChannelId: channelID,
-			Message:   "Please provide a task name. Usage: !maestro <task_name> [-n <num_messages>]",
-			RootId:    rootID,
-		})
-		return fmt.Errorf("taskName is empty")
-	}
+	//if taskName == "" { // Should be caught by parser, but defense in depth
+	//	p.API.SendEphemeralPost(userID, &model.Post{
+	//		ChannelId: channelID,
+	//		Message:   "Please provide a task name. Usage: !maestro <task_name> [-n <num_messages>]",
+	//		RootId:    rootID,
+	//	})
+	//	return fmt.Errorf("taskName is empty")
+	//}
 
 	// Fetch messages
 	// For a prefix command, the rootID is the ID of the '!maestro' post itself.
@@ -298,41 +327,48 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 
 	p.API.LogInfo("Posts fetched for channel", "channelID", channelID, "postListOrderLength", len(postList.Order), "postListPostsLength", len(postList.Posts))
 
-	var fetchedMessages []string
-	count := 0
-	// Posts are returned newest first. We iterate to find messages *before* the rootID post.
-	for _, postID := range postList.Order {
-		if count >= numMessages {
-			break
-		}
-		post := postList.Posts[postID]
-		if post.Id == rootID { // Stop if we reach the command message itself
-			continue // Don't include the command message itself in the context
-		}
-		// Skip posts from the bot itself to avoid loops.
-		// Also skip other !maestro commands to prevent weird recursion if context is large.
-		if post.UserId == p.botUserID || strings.HasPrefix(strings.ToLower(post.Message), "!maestro") {
-			continue
-		}
-		fetchedMessages = append([]string{post.Message}, fetchedMessages...) // Prepend to reverse order to chronological
-		count++
+	var fetchedMessages []Message
+
+	fetchedMessages = buildMessages(p.botUserID, postList, p.API)
+
+	for _, m := range fetchedMessages {
+		p.API.LogInfo("Processing Maestro task", "Role", m.Role, "message", m.Content)
 	}
+
+	//count := 0
+	// Posts are returned newest first. We iterate to find messages *before* the rootID post.
+	//for _, postID := range postList.Order {
+	//	if count >= numMessages {
+	//		break
+	//	}
+	//	post := postList.Posts[postID]
+	//	if post.Id == rootID { // Stop if we reach the command message itself
+	//		continue // Don't include the command message itself in the context
+	//	}
+	//	// Skip posts from the bot itself to avoid loops.
+	//	// Also skip other !maestro commands to prevent weird recursion if context is large.
+	//	if post.UserId == p.botUserID || strings.HasPrefix(strings.ToLower(post.Message), "!maestro") {
+	//		continue
+	//	}
+	//	fetchedMessages = append([]string{post.Message}, fetchedMessages...) // Prepend to reverse order to chronological
+	//	count++
+	//}
 	// If fetchedMessages is still longer than numMessages due to GetPostsBefore behavior or initial fetch, truncate.
 	// This logic is slightly different because we are explicitly iterating and counting.
 	// The above loop already limits to numMessages.
 
-	messagesString := strings.Join(fetchedMessages, "\n")
+	//messagesString := strings.Join(fetchedMessages, "\n")
 
-	p.API.LogInfo("Constructed messages string", "length", len(messagesString))
+	//p.API.LogInfo("Constructed messages string", "length", len(messagesString))
 
-	var finalPrompt string
-	if strings.ToLower(taskName) == "summarize" {
-		finalPrompt = fmt.Sprintf("Summarize the following messages:\n%s", messagesString)
-	} else {
-		finalPrompt = fmt.Sprintf("User query: %s\n%s", taskName, messagesString)
-	}
+	//var finalPrompt string
+	//if strings.ToLower(taskName) == "summarize" {
+	//	finalPrompt = fmt.Sprintf("Summarize the following messages:\n%s", messagesString)
+	//} else {
+	//	finalPrompt = fmt.Sprintf("User query: %s\n%s", taskName, messagesString)
+	//}
 
-	p.API.LogInfo("Constructed final prompt", "length", len(finalPrompt))
+	//p.API.LogInfo("Constructed final prompt", "length", len(finalPrompt))
 
 	// Parameters for GraphQL call
 	graphQLConversationID := "1"
@@ -354,8 +390,9 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 		return fmt.Errorf("GraphQL Agent WebSocket URL is not configured")
 	}
 
+	p.API.LogInfo("agent url is ", "webSocketURL", webSocketURL)
 	// The 'finalPrompt' is the actual message content to be sent to the agent.
-	messages, err := CallGraphQLAgentFunc("apiKey", graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, finalPrompt, webSocketURL) // Use configured WebSocket URL
+	messages, err := CallGraphQLAgentFunc("apiKey", graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, fetchedMessages, webSocketURL) // Use configured WebSocket URL
 	if err != nil {
 		p.API.LogError("Error calling GraphQL Agent for !maestro task", "error", err.Error(), "user_id", userID, "task_name", taskName, "webSocketURL", webSocketURL)
 		p.API.SendEphemeralPost(userID, &model.Post{
@@ -381,24 +418,43 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 
 	message := messages
 
-	responsePost := &model.Post{
-		UserId:    p.botUserID,
+	ephemeralPost := &model.Post{
 		ChannelId: channelID,
 		Message:   message,
-		RootId:    rootID, // Thread the response to the !maestro message
+		//RootId:    rootID, // Thread to the original !maestro message
 	}
-
-	p.API.SendEphemeralPost(userID, responsePost)
-
-	// Post each message as an ephemeral post
-	//for _, msg := range messages {
-	//	ephemeralPost := &model.Post{
-	//		ChannelId: channelID,
-	//		Message:   msg,
-	//		RootId:    rootID, // Thread to the original !maestro message
-	//	}
-	//	p.API.SendEphemeralPost(userID, ephemeralPost)
-	//}
+	p.API.SendEphemeralPost(userID, ephemeralPost)
 
 	return nil
+}
+
+func buildMessages(botUserID string, posts *model.PostList, api plugin.API) []Message {
+	rand.Seed(time.Now().UnixNano())
+
+	var messages []Message
+	for _, postId := range posts.Order {
+		role := "user"
+		post := posts.Posts[postId]
+		content := post.Message
+		if post.UserId == botUserID {
+			role = "assistant"
+		} else {
+			content = fmt.Sprintf("%s: %s", post.UserId, post.Message)
+		}
+
+		message := Message{
+			Content: content,
+			Format:  "text",
+			Role:    role,
+			TurnID:  strconv.Itoa(rand.Intn(100000)), // random int as string
+		}
+
+		messages = append(messages, message)
+	}
+
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+
+	return messages
 }
