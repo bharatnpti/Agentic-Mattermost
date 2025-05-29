@@ -81,27 +81,7 @@ func (p *Plugin) OnActivate() error {
 		GetOpenAIAPIKey: func() string {
 			return p.getConfiguration().OpenAIAPIKey
 		},
-		//CallGraphQLAgentFunc: func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, userMessage string, apiURL string) ([]command.AgentMessageOutput, error) {
-		//	// Call the global CallGraphQLAgentFunc from the main package
-		//	mainMessages, err := CallGraphQLAgentFunc(apiKey, conversationID, userID, tenantID, channelIDSystemContext, userMessage, "http://localhost:8080/graphiql")
-		//	if err != nil {
-		//		return nil, err
-		//	}
-		//	// Convert []main.MessageOutput to []command.AgentMessageOutput
-		//	var commandMessages []command.AgentMessageOutput
-		//	//for _, msg := range mainMessages {
-		//	//	commandMessages = append(commandMessages,
-		//	output := command.AgentMessageOutput{
-		//		Content: mainMessages,
-		//		Format:  "text",
-		//		Role:    "assistant",
-		//		TurnID:  "TurnID",
-		//	}
-		//	//)
-		//	//}
-		//	return commandMessages, nil
-		//},
-		// OpenAIAPIURL field removed
+
 		ParseArguments: func(argsString string) (string, int, error) {
 			return p.parseMaestroArgs(argsString)
 		},
@@ -334,41 +314,6 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 	for _, m := range fetchedMessages {
 		p.API.LogInfo("Processing Maestro task", "Role", m.Role, "message", m.Content)
 	}
-
-	//count := 0
-	// Posts are returned newest first. We iterate to find messages *before* the rootID post.
-	//for _, postID := range postList.Order {
-	//	if count >= numMessages {
-	//		break
-	//	}
-	//	post := postList.Posts[postID]
-	//	if post.Id == rootID { // Stop if we reach the command message itself
-	//		continue // Don't include the command message itself in the context
-	//	}
-	//	// Skip posts from the bot itself to avoid loops.
-	//	// Also skip other !maestro commands to prevent weird recursion if context is large.
-	//	if post.UserId == p.botUserID || strings.HasPrefix(strings.ToLower(post.Message), "!maestro") {
-	//		continue
-	//	}
-	//	fetchedMessages = append([]string{post.Message}, fetchedMessages...) // Prepend to reverse order to chronological
-	//	count++
-	//}
-	// If fetchedMessages is still longer than numMessages due to GetPostsBefore behavior or initial fetch, truncate.
-	// This logic is slightly different because we are explicitly iterating and counting.
-	// The above loop already limits to numMessages.
-
-	//messagesString := strings.Join(fetchedMessages, "\n")
-
-	//p.API.LogInfo("Constructed messages string", "length", len(messagesString))
-
-	//var finalPrompt string
-	//if strings.ToLower(taskName) == "summarize" {
-	//	finalPrompt = fmt.Sprintf("Summarize the following messages:\n%s", messagesString)
-	//} else {
-	//	finalPrompt = fmt.Sprintf("User query: %s\n%s", taskName, messagesString)
-	//}
-
-	//p.API.LogInfo("Constructed final prompt", "length", len(finalPrompt))
 
 	// Parameters for GraphQL call
 	graphQLConversationID := "1"
