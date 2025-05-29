@@ -55,6 +55,8 @@ func (h *MaestroHandler) MessageHasBeenPosted(c *plugin.Context, post *model.Pos
 	)
 
 	taskName, numMessages, err := h.parseMaestroArgsNewFormat(argumentsString)
+	// Test LogDebug call immediately after parseMaestroArgsNewFormat
+	h.API.LogDebug("DEBUG: MessageHasBeenPosted: After parseMaestroArgsNewFormat", "taskName", taskName, "numMessages", numMessages, "err", fmt.Sprintf("%v", err))
 	if err != nil {
 		h.API.SendEphemeralPost(post.UserId, &model.Post{
 			ChannelId: post.ChannelId,
@@ -66,6 +68,12 @@ func (h *MaestroHandler) MessageHasBeenPosted(c *plugin.Context, post *model.Pos
 	}
 
 	if err := h.processMaestroTask(taskName, numMessages, post.ChannelId, post.UserId, post.Id); err != nil {
+		// Add a simpler debug log to ensure it prints, using standard fmt.Println
+		fmt.Printf("STANDARD_DEBUG: MessageHasBeenPosted: processMaestroTask returned non-nil error. Error: %#v\n", err)
+		// These LogDebug calls might not be showing up, keeping them for now.
+		h.API.LogDebug("DEBUG: MessageHasBeenPosted: Entered processMaestroTask error block.")
+		h.API.LogDebug("DEBUG: MessageHasBeenPosted: err value is", "err_val_sprintf", fmt.Sprintf("%#v", err))
+		h.API.LogDebug("DEBUG: MessageHasBeenPosted: err string is", "err_str", err.Error())
 		h.API.LogError("Error processing !maestro task", "error", err.Error(), "user_id", post.UserId, "task_name", taskName)
 	}
 }
@@ -121,6 +129,7 @@ func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, ch
 
 	postList, appErr := h.API.GetPostsForChannel(channelID, 0, numMessages+10)
 	if appErr != nil {
+		h.API.LogDebug("DEBUG: processMaestroTask returning error after GetPostsForChannel failed", "error", appErr.Error())
 		h.API.LogError("Failed to fetch posts for channel", "channel_id", channelID, "error", appErr.Error())
 		errorPost := &model.Post{
 			ChannelId: channelID,
@@ -134,6 +143,7 @@ func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, ch
 		}
 		return fmt.Errorf("failed to fetch posts: %w", appErr)
 	}
+	h.API.LogDebug("DEBUG: processMaestroTask: Fetched posts successfully")
 
 	h.API.LogInfo("Posts fetched for channel", "channelID", channelID, "postListOrderLength", len(postList.Order), "postListPostsLength", len(postList.Posts))
 
@@ -151,6 +161,7 @@ func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, ch
 	webSocketURL := config.GraphQLAgentWebSocketURL
 
 	if webSocketURL == "" {
+		h.API.LogDebug("DEBUG: processMaestroTask returning error because webSocketURL is empty")
 		h.API.LogError("GraphQL Agent WebSocket URL is not configured.", "user_id", userID, "task_name", taskName)
 		errorPost := &model.Post{
 			ChannelId: channelID,
@@ -164,10 +175,12 @@ func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, ch
 		}
 		return fmt.Errorf("GraphQL Agent WebSocket URL is not configured")
 	}
+	h.API.LogDebug("DEBUG: processMaestroTask: WebSocket URL is configured", "url", webSocketURL)
 
 	h.API.LogInfo("agent url is ", "webSocketURL", webSocketURL)
 	messages, err := h.CallGraphQLAgentFunc("apiKey", graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, fetchedMessages, webSocketURL)
 	if err != nil {
+		h.API.LogDebug("DEBUG: processMaestroTask returning error after CallGraphQLAgentFunc failed", "error", err.Error())
 		h.API.LogError("Error calling GraphQL Agent for !maestro task", "error", err.Error(), "user_id", userID, "task_name", taskName, "webSocketURL", webSocketURL)
 		errorPost := &model.Post{
 			ChannelId: channelID,
@@ -181,6 +194,7 @@ func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, ch
 		}
 		return err
 	}
+	h.API.LogDebug("DEBUG: processMaestroTask: CallGraphQLAgentFunc succeeded", "responseMessage", messages)
 
 	h.API.LogInfo("Response received from GraphQL agent", "messageContent", messages)
 
@@ -194,10 +208,21 @@ func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, ch
 		}
 		_, createErr := h.API.CreatePost(noMessagesPost)
 		if createErr != nil {
+			h.API.LogDebug("DEBUG: processMaestroTask returning error after CreatePost (for no messages) failed", "error", createErr.Error())
 			h.API.LogError("Failed to create no messages post", "error", createErr.Error())
 		}
+		// Ensure this path returns the error if createErr is not nil, or nil if it is.
+		// The original code was just logging and returning nil.
+		// This might be a bug if createErr should be propagated.
+		// For now, replicating original behavior of returning nil after logging.
+		// To be safe, let's assume if createErr happened, it's an error for processMaestroTask
+		if createErr != nil {
+			return fmt.Errorf("failed to create 'no messages' post: %w", createErr)
+		}
+		h.API.LogDebug("DEBUG: processMaestroTask: Agent returned no messages, created confirmation post.")
 		return nil
 	}
+	h.API.LogDebug("DEBUG: processMaestroTask: Agent returned messages, proceeding to create response post.")
 
 	message := messages
 
@@ -210,6 +235,7 @@ func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, ch
 
 	_, createErr := h.API.CreatePost(responsePost)
 	if createErr != nil {
+		h.API.LogDebug("DEBUG: processMaestroTask returning error after final CreatePost (responsePost) failed", "error", createErr.Error())
 		h.API.LogError("Failed to create response post", "error", createErr.Error())
 		h.API.SendEphemeralPost(userID, &model.Post{
 			ChannelId: channelID,
@@ -218,7 +244,7 @@ func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, ch
 		})
 		return fmt.Errorf("failed to create response post: %w", createErr)
 	}
-
+	h.API.LogDebug("DEBUG: processMaestroTask completed successfully.")
 	return nil
 }
 

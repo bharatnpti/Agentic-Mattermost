@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors" // Added for errors.New
 	"fmt"
 	"log"
 	"net"
@@ -280,17 +281,24 @@ func handleAgentSubscriptionResponse(response AgentResponse) *MessageOutput { //
 
 // GraphQLSubscriptionClient manages a GraphQL subscription over WebSocket.
 type GraphQLSubscriptionClient struct {
-	conn      *websocket.Conn
-	url       string
-	callbacks map[string]func(interface{})
-	protocol  string
+	conn           *websocket.Conn
+	url            string
+	callbacks      map[string]func(interface{})
+	protocol       string
+	internalCtx    context.Context
+	internalCancel context.CancelFunc
+	listenDone     chan struct{} // Add this channel
 }
 
 // NewGraphQLSubscriptionClient creates a new client for GraphQL subscriptions.
 func NewGraphQLSubscriptionClient(wsURL string) *GraphQLSubscriptionClient {
+	iCtx, iCancel := context.WithCancel(context.Background())
 	return &GraphQLSubscriptionClient{
-		url:       wsURL,
-		callbacks: make(map[string]func(interface{})),
+		url:            wsURL,
+		callbacks:      make(map[string]func(interface{})),
+		internalCtx:    iCtx,
+		internalCancel: iCancel,
+		listenDone:     make(chan struct{}), // Initialize here
 	}
 }
 
@@ -349,26 +357,21 @@ func (c *GraphQLSubscriptionClient) Connect(ctx context.Context) error {
 	return nil
 }
 
-// Close sends a termination message and closes the WebSocket connection.
+// Close signals the listener to stop, waits for it, then closes the WebSocket connection.
 func (c *GraphQLSubscriptionClient) Close() error {
-	if c.conn != nil {
-		// Send terminate message based on protocol
-		// terminateMsgType := "connection_terminate" // For graphql-ws // Intentionally removed as unused
-		if c.protocol == "graphql-transport-ws" {
-			// terminateMsgType = "terminate" // This might be 'complete' for the subscription ID or a general terminate // Intentionally removed as unused
-			// For graphql-transport-ws, usually you send 'complete' for each subscription ID.
-			// A general 'terminate' might not be standard for this protocol.
-			// However, simply closing the connection is often sufficient.
-			// For simplicity, we'll send a generic terminate or just close.
-			// Let's assume closing is fine.
-		} else {
-			// graphql-ws uses GQL_CONNECTION_TERMINATE or similar.
-			// The simple "connection_terminate" might work for some servers.
+	c.internalCancel() // Signal Listen to stop
+
+	// Wait for Listen goroutine to finish
+	if c.listenDone != nil { 
+		select {
+		case <-c.listenDone:
+			// Listen goroutine confirmed shutdown
+		case <-time.After(5 * time.Second): // Safety timeout
+			log.Println("Timeout waiting for Listen goroutine to stop during Close")
 		}
+	}
 
-		// It's often better to just close the connection if specific termination messages cause issues.
-		// c.sendMessage(GraphQLMessage{Type: terminateMsgType}) // Optional: send termination message
-
+	if c.conn != nil {
 		err := c.conn.Close()
 		c.conn = nil // Ensure conn is nil after closing
 		return err
@@ -414,36 +417,129 @@ func (c *GraphQLSubscriptionClient) Subscribe(subscriptionID, query string, vari
 // It should be run in a separate goroutine.
 // It exits when the context is cancelled or an unrecoverable error occurs.
 func (c *GraphQLSubscriptionClient) Listen(ctx context.Context) error {
+	defer close(c.listenDone) // Ensure listenDone is closed on any exit path
+
 	if c.conn == nil {
 		return fmt.Errorf("cannot listen: connection is not established")
 	}
+
 	for {
+		// **CRITICAL:** Proactively check for cancellation before any read attempt.
 		select {
+		case <-c.internalCtx.Done():
+			log.Println("Listen: internalCtx done, exiting.")
+			return errors.New("connection closed by client (internal)")
 		case <-ctx.Done():
-			return ctx.Err() // Context cancelled or timed out
+			log.Println("Listen: main ctx done, exiting.")
+			return ctx.Err()
 		default:
-			// Set a read deadline to periodically check context.Done()
-			c.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-			var msg GraphQLMessage
-			err := c.conn.ReadJSON(&msg)
-			if err != nil {
-				// Check if it's a timeout error, then continue to check ctx.Done()
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					c.conn.SetReadDeadline(time.Time{}) // Clear deadline before next loop
-					continue
-				}
-				// If it's a close error, it might be expected if Close() was called.
-				// Check for specific websocket close errors.
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-					log.Println("WebSocket normally closed.")
-					return nil // Normal closure
-				}
-				log.Printf("Error reading JSON message: %v", err)
-				return fmt.Errorf("read error: %w", err)
-			}
-			c.conn.SetReadDeadline(time.Time{}) // Clear deadline after successful read
-			c.handleMessage(msg)
+			// Proceed only if not cancelled.
 		}
+
+		// Set a short read deadline to ensure ReadJSON doesn't block indefinitely
+		// if the connection is in a weird state but not yet fully closed
+		// in a way that ReadJSON would immediately return an error.
+		if err := c.conn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
+			log.Printf("Listen: Error setting read deadline: %v. Assuming connection is dead.", err)
+			// If SetReadDeadline fails, it's likely the connection is already dead.
+			// We should check contexts to return the most accurate error.
+			if c.internalCtx.Err() != nil {
+				return errors.New("connection closed by client (internal, on set deadline error)")
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("set read deadline: %w", err)
+		}
+
+		var msg GraphQLMessage
+		err := c.conn.ReadJSON(&msg) // This is the critical call
+
+		// After ReadJSON, check if the connection became nil due to a concurrent Close.
+		// This is a safeguard, though the proactive checks should ideally prevent this state.
+		if c.conn == nil {
+			 log.Println("Listen: Connection became nil during ReadJSON or before clearing deadline, exiting.")
+			 // Prefer context errors if available, as they indicate the shutdown trigger.
+			 if c.internalCtx.Err() != nil {
+				return errors.New("connection closed by client (internal, conn nil post-read)")
+			 }
+			 if ctx.Err() != nil {
+				return ctx.Err()
+			 }
+			 return errors.New("connection became nil")
+		}
+		
+		// Only clear the read deadline if the error was a timeout.
+		// If it was a more serious error, the connection might be truly dead,
+		// and trying to operate on it (even to clear a deadline) could be risky.
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			 if errClear := c.conn.SetReadDeadline(time.Time{}); errClear != nil {
+				log.Printf("Listen: Error clearing read deadline after timeout: %v. Assuming connection is dead.", errClear)
+				// As above, prefer context errors if available.
+				if c.internalCtx.Err() != nil {
+					return errors.New("connection closed by client (internal, on clear deadline error)")
+				}
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return fmt.Errorf("clear read deadline: %w", errClear)
+			 }
+		}
+
+
+		if err != nil {
+			// Block until a context is done, or proceed if one is already done.
+			// This ensures that if a context was cancelled during ReadJSON, we see it.
+			// Add a short timeout to this select itself to prevent indefinite block if contexts are truly fine
+			// and ReadJSON returned an error for other reasons.
+			select {
+			case <-c.internalCtx.Done():
+				log.Printf("Listen: internalCtx done after ReadJSON error (%v), exiting.", err)
+				return errors.New("connection closed by client (internal, after read error)")
+			case <-ctx.Done():
+				log.Printf("Listen: main ctx done after ReadJSON error (%v), exiting.", err)
+				return ctx.Err()
+			case <-time.After(50 * time.Millisecond): // Short timeout
+				// Contexts didn't report done quickly. Now analyze 'err'.
+				log.Printf("Listen: Contexts not immediately done after ReadJSON error (%v). Analyzing error.", err)
+			}
+
+			// Now, proceed with error analysis if contexts weren't found done above quickly.
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Before continuing, one final check of contexts. If a context is now reporting done,
+				// then this timeout was likely part of its shutdown sequence.
+				if c.internalCtx.Err() != nil {
+					 log.Printf("Listen: internalCtx is now done after net.Error timeout for err=%v. Exiting.", err)
+					 return errors.New("connection closed by client (internal, during net.Error timeout handling)")
+				}
+				if ctx.Err() != nil {
+					 log.Printf("Listen: ctx is now done after net.Error timeout for err=%v. Exiting.", err)
+					 return ctx.Err()
+				}
+				log.Println("Listen: ReadJSON timeout, contexts still appear active, continuing loop.")
+				continue
+			}
+
+			// Handle specific WebSocket close errors or "use of closed network connection".
+			// These indicate the connection is definitively closed.
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) ||
+				(err != nil && strings.Contains(err.Error(), "use of closed network connection")) {
+				log.Printf("Listen: WebSocket connection closed gracefully or expectedly: %v", err)
+				return nil // Normal or expected closure, signal graceful exit from Listen.
+			}
+
+			// Any other error is unexpected and likely fatal for this listener.
+			log.Printf("Listen: Unexpected error reading JSON message: %v", err)
+			return fmt.Errorf("unexpected read error: %w", err)
+		}
+		
+		// If read was successful, process the message.
+		// Ensure conn is not nil before processing.
+		if c.conn == nil { // Should be redundant due to earlier check, but as a safeguard.
+			 log.Println("Listen: Connection became nil before handling message, exiting.")
+			 return errors.New("connection became nil before handling message")
+		}
+		c.handleMessage(msg)
 	}
 }
 
