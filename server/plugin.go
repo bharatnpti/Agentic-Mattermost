@@ -1,14 +1,12 @@
 package main
 
 import (
-	"fmt"
-	"math/rand"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/gorilla/mux"
 	"github.com/mattermost/mattermost-plugin-starter-template/server/command"
 	"github.com/mattermost/mattermost-plugin-starter-template/server/store/kvstore"
 	"github.com/mattermost/mattermost/server/public/model"
@@ -42,6 +40,12 @@ type Plugin struct {
 
 	// botUserID is the user ID of the plugin's bot account.
 	botUserID string
+
+	// maestroHandler is the handler for !maestro commands.
+	maestroHandler *MaestroHandler
+
+	// router is the HTTP router for the plugin.
+	router *mux.Router
 }
 
 // OnActivate is invoked when the plugin is activated. If an error is returned, the plugin will be deactivated.
@@ -74,22 +78,18 @@ func (p *Plugin) OnActivate() error {
 	// Since /maestro is removed, ParseArguments, GetOpenAIAPIKey, etc., are not strictly needed by command.go
 	// However, keeping them here as per instructions in case other (future) commands might use them.
 	// If no other command uses them, these could be cleaned up from HandlerDependencies struct too.
+	// Updated to reflect simplified HandlerDependencies in command.go
 	dependencies := command.HandlerDependencies{
 		API:       p.API,
 		BotUserID: p.botUserID,
-		// The following fields are likely unused by 'hello' command but kept for now.
-		GetOpenAIAPIKey: func() string {
-			return p.getConfiguration().OpenAIAPIKey
-		},
-
-		ParseArguments: func(argsString string) (string, int, error) {
-			return p.parseMaestroArgs(argsString)
-		},
 	}
 	// NewCommandHandler will now only register the 'hello' command, as the /maestro registration
 	// has been removed from command.go's NewCommandHandler.
 	// No explicit unregistration call is needed here if the registration is removed from the command package.
 	p.commandClient = command.NewCommandHandler(dependencies)
+
+	// Initialize MaestroHandler
+	p.maestroHandler = NewMaestroHandler(p.API, p.botUserID, p.getConfiguration, CallGraphQLAgentFunc)
 
 	job, err := cluster.Schedule(
 		p.API,
@@ -102,6 +102,9 @@ func (p *Plugin) OnActivate() error {
 	}
 
 	p.backgroundJob = job
+
+	// Initialize the HTTP router
+	p.initializeRouter()
 
 	return nil
 }
@@ -142,311 +145,15 @@ func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
 		return
 	}
 
-	// 3. Extract the arguments string
-	// Trim the prefix and then any leading/trailing whitespace from the arguments.
-	// Important: Use the original post.Message for slicing to preserve case in argumentsString if needed later,
-	// though parsing logic like parseOpenAICommandArgs might handle case for task_name.
-	argumentsString := strings.TrimSpace(post.Message[len(triggerPrefix):])
-
-	// 5. Add logging
-	p.API.LogInfo(
-		"Detected '!maestro' prefix.",
-		"user_id", post.UserId,
-		"channel_id", post.ChannelId,
-		"original_message", post.Message,
-		"arguments_string", argumentsString,
-	)
-
-	// 4. Placeholder for parsing and calling refactored logic
-	// 4. Placeholder for parsing and calling refactored logic
-	taskName, numMessages, err := p.parseMaestroArgsNewFormat(argumentsString)
-	if err != nil {
-		p.API.SendEphemeralPost(post.UserId, &model.Post{
-			ChannelId: post.ChannelId,
-			Message:   err.Error(),
-			RootId:    post.Id, // Thread the error message to the command
-		})
-		p.API.LogError("Failed to parse arguments for !maestro command", "error", err.Error(), "user_id", post.UserId, "arguments", argumentsString)
-		return
-	}
-
-	if err := p.processMaestroTask(taskName, numMessages, post.ChannelId, post.UserId, post.Id); err != nil {
-		// processMaestroTask is responsible for its own user-facing error posts and logging critical errors.
-		// We can log an additional message here if needed, e.g.
-		p.API.LogError("Error processing !maestro task", "error", err.Error(), "user_id", post.UserId, "task_name", taskName)
-		// No need to send another ephemeral post if processMaestroTask already did.
-	}
-}
-
-// parseMaestroArgs parses the arguments for the !maestro command.
-// It's adapted from parseOpenAICommandArgs.
-func (p *Plugin) parseMaestroArgs(argsString string) (taskName string, numMessages int, err error) {
-
-	p.API.LogInfo("Parsing Maestro arguments", "args", argsString)
-
-	fields := strings.Fields(argsString)
-	// For !maestro, the argsString is everything after "!maestro ".
-	// So, fields[0] is the first part of the task_name or -n.
-	if len(fields) < 1 && argsString != "summarize" { // Need at least a task_name, unless it's summarize with no further args
-		// If argsString is exactly "summarize", it's valid. Otherwise, if fields is empty, it's an error.
-		if argsString != "summarize" || len(fields) > 0 {
-			return "", 0, fmt.Errorf("not enough arguments. Usage: !maestro <task_name> [-n <num_messages>]")
-		}
-	}
-
-	if argsString == "summarize" && len(fields) == 0 { // Edge case: "!maestro summarize"
-		return "summarize", command.DefaultNumMessages, nil
-	}
-	if len(fields) == 0 { // Should be caught above, but as a safeguard
-		return "", 0, fmt.Errorf("task_name cannot be empty. Usage: !maestro <task_name> [-n <num_messages>]")
-	}
-
-	numMessages = command.DefaultNumMessages // Default value
-	taskNameParts := []string{}
-	taskNameEndIndex := -1
-
-	// Iterate through fields to find task_name and -n parameter
-	// For prefix commands, fields are the arguments themselves.
-	for i := 0; i < len(fields); i++ {
-		if fields[i] == "-n" {
-			taskNameEndIndex = i - 1 // Task name ends before -n
-			if i+1 < len(fields) {
-				val, convErr := strconv.Atoi(fields[i+1])
-				if convErr != nil {
-					return "", 0, fmt.Errorf("invalid value for -n: '%s'. It must be an integer", fields[i+1])
-				}
-				if val <= 0 {
-					return "", 0, fmt.Errorf("invalid value for -n: %d. It must be a positive integer", val)
-				}
-				numMessages = val
-				i++ // Skip the value part of -n
-			} else {
-				return "", 0, fmt.Errorf("missing value for -n argument")
-			}
-		} else if strings.HasPrefix(fields[i], "-") && taskNameEndIndex != -1 {
-			// If we have already parsed -n (i.e. taskNameEndIndex is set), another flag is an error
-			return "", 0, fmt.Errorf("unknown or misplaced flag: %s. Flags like -n must come after the task name", fields[i])
-		} else if taskNameEndIndex == -1 { // Still collecting task name, or expecting -n
-			if strings.HasPrefix(fields[i], "-") && fields[i] != "-n" { // It's a flag, but not -n, and we are expecting task name or -n
-				return "", 0, fmt.Errorf("unknown or misplaced flag: %s. Only -n is a recognized flag", fields[i])
-			}
-			taskNameParts = append(taskNameParts, fields[i]) // Append if part of task name
-		} else {
-			// This case means we have arguments after -n <value> which are not allowed (and not flags handled above)
-			return "", 0, fmt.Errorf("unexpected argument: %s. No arguments are allowed after -n <value>", fields[i])
-		}
-	}
-
-	if len(taskNameParts) == 0 {
-		// This case can be hit if only "-n" "10" is provided, which is invalid.
-		if argsString == "summarize" { // "!maestro summarize" is valid and handled earlier.
-			return "summarize", numMessages, nil // If -n was parsed for summarize
-		}
-		return "", 0, fmt.Errorf("task_name cannot be empty. Usage: !maestro <task_name> [-n <num_messages>]")
-	}
-	taskName = strings.Join(taskNameParts, " ")
-
-	return taskName, numMessages, nil
-}
-
-func (p *Plugin) parseMaestroArgsNewFormat(argsString string) (taskText string, numMessages int, err error) {
-	p.API.LogInfo("Parsing Maestro arguments", "args", argsString)
-
-	fields := strings.Fields(argsString)
-	numMessages = command.DefaultNumMessages // Default value
-	taskTextStart := 0
-
-	// Check if -n is the first argument and valid
-	if len(fields) >= 2 && fields[0] == "-n" {
-		val, convErr := strconv.Atoi(fields[1])
-		if convErr != nil {
-			return "", 0, fmt.Errorf("invalid value for -n: '%s'. It must be an integer", fields[1])
-		}
-		if val <= 0 {
-			return "", 0, fmt.Errorf("invalid value for -n: %d. It must be a positive integer", val)
-		}
-		numMessages = val
-		taskTextStart = 2
-	}
-
-	// If more arguments follow -n, treat them as the task text
-	if len(fields) > taskTextStart {
-		taskText = strings.Join(fields[taskTextStart:], " ")
-	}
-
-	return taskText, numMessages, nil
-}
-
-// processMaestroTask contains the core logic for handling a maestro task.
-func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID string, userID string, rootID string) error {
-	p.API.LogInfo("Processing Maestro task", "taskName", taskName)
-
-	// Get the original post to determine proper threading
-	originalPost, appErr := p.API.GetPost(rootID)
-	if appErr != nil {
-		p.API.LogError("Failed to get original post", "post_id", rootID, "error", appErr.Error())
-		// Continue with the original rootID if we can't fetch the post
-	}
-
-	// Determine the correct RootId for threading
-	// If the original post is already in a thread, use its RootId
-	// If the original post is not in a thread, use its own ID as the RootId
-	var threadRootID string
-	if originalPost != nil && originalPost.RootId != "" {
-		threadRootID = originalPost.RootId
+	// Pass the call to the maestroHandler if it's initialized
+	if p.maestroHandler != nil {
+		p.maestroHandler.MessageHasBeenPosted(c, post)
 	} else {
-		threadRootID = rootID
+		p.API.LogError("MaestroHandler not initialized. MessageHasBeenPosted will not be handled for !maestro.")
 	}
-
-	p.API.LogInfo("Threading info", "originalPostId", rootID, "threadRootID", threadRootID)
-
-	// Fetch messages
-	// For a prefix command, the rootID is the ID of the '!maestro' post itself.
-	// We want messages *before* this post. GetPostsBefore() is suitable.
-	// If we use GetPostsForChannel, we need to be careful with pagination and filtering.
-	// Let's stick to GetPostsForChannel for consistency with slash command, and filter.
-	postList, appErr := p.API.GetPostsForChannel(channelID, 0, numMessages+10) // Fetch more to ensure we can filter and still get numMessages
-	if appErr != nil {
-		p.API.LogError("Failed to fetch posts for channel", "channel_id", channelID, "error", appErr.Error())
-		// Send error as thread reply instead of ephemeral
-		errorPost := &model.Post{
-			ChannelId: channelID,
-			Message:   "An error occurred while fetching messages. Please try again later.",
-			RootId:    threadRootID,
-			UserId:    p.botUserID,
-		}
-		_, createErr := p.API.CreatePost(errorPost)
-		if createErr != nil {
-			p.API.LogError("Failed to create error post", "error", createErr.Error())
-		}
-		return errors.Wrap(appErr, "failed to fetch posts")
-	}
-
-	p.API.LogInfo("Posts fetched for channel", "channelID", channelID, "postListOrderLength", len(postList.Order), "postListPostsLength", len(postList.Posts))
-
-	var fetchedMessages []Message
-
-	fetchedMessages = buildMessages(p.botUserID, postList, p.API)
-
-	for _, m := range fetchedMessages {
-		p.API.LogInfo("Processing Maestro task", "Role", m.Role, "message", m.Content)
-	}
-
-	// Parameters for GraphQL call
-	graphQLConversationID := "1"
-	graphQLTenantID := "de"
-	graphQLSystemChannelID := "ONEAPPWEB" // Specific value for GraphQL system context
-
-	// Get the GraphQL Agent WebSocket URL from the configuration
-	config := p.getConfiguration()
-	webSocketURL := config.GraphQLAgentWebSocketURL
-
-	// Check if the WebSocket URL is configured
-	if webSocketURL == "" {
-		p.API.LogError("GraphQL Agent WebSocket URL is not configured.", "user_id", userID, "task_name", taskName)
-		// Send error as thread reply instead of ephemeral
-		errorPost := &model.Post{
-			ChannelId: channelID,
-			Message:   "The GraphQL Agent WebSocket URL is not configured. Please contact an administrator.",
-			RootId:    threadRootID,
-			UserId:    p.botUserID,
-		}
-		_, createErr := p.API.CreatePost(errorPost)
-		if createErr != nil {
-			p.API.LogError("Failed to create error post", "error", createErr.Error())
-		}
-		return fmt.Errorf("GraphQL Agent WebSocket URL is not configured")
-	}
-
-	p.API.LogInfo("agent url is ", "webSocketURL", webSocketURL)
-	// The 'finalPrompt' is the actual message content to be sent to the agent.
-	messages, err := CallGraphQLAgentFunc("apiKey", graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, fetchedMessages, webSocketURL) // Use configured WebSocket URL
-	if err != nil {
-		p.API.LogError("Error calling GraphQL Agent for !maestro task", "error", err.Error(), "user_id", userID, "task_name", taskName, "webSocketURL", webSocketURL)
-		// Send error as thread reply instead of ephemeral
-		errorPost := &model.Post{
-			ChannelId: channelID,
-			Message:   "An error occurred while contacting the agent. Please try again later or contact an administrator.",
-			RootId:    threadRootID,
-			UserId:    p.botUserID,
-		}
-		_, createErr := p.API.CreatePost(errorPost)
-		if createErr != nil {
-			p.API.LogError("Failed to create error post", "error", createErr.Error())
-		}
-		return err
-	}
-
-	p.API.LogInfo("Response received from GraphQL agent", "messageContent", messages)
-
-	if len(messages) == 0 {
-		p.API.LogInfo("GraphQL Agent returned no messages for !maestro task", "user_id", userID, "task_name", taskName)
-		// Send "no messages" response as thread reply instead of ephemeral
-		noMessagesPost := &model.Post{
-			ChannelId: channelID,
-			Message:   "The agent processed your request but returned no messages.",
-			RootId:    threadRootID,
-			UserId:    p.botUserID,
-		}
-		_, createErr := p.API.CreatePost(noMessagesPost)
-		if createErr != nil {
-			p.API.LogError("Failed to create no messages post", "error", createErr.Error())
-		}
-		return nil
-	}
-
-	message := messages
-
-	// Create the response post as a thread reply instead of ephemeral
-	responsePost := &model.Post{
-		ChannelId: channelID,
-		Message:   message,
-		RootId:    threadRootID, // Thread to the original !maestro message
-		UserId:    p.botUserID,
-	}
-
-	_, createErr := p.API.CreatePost(responsePost)
-	if createErr != nil {
-		p.API.LogError("Failed to create response post", "error", createErr.Error())
-		// Fallback to ephemeral post if CreatePost fails
-		p.API.SendEphemeralPost(userID, &model.Post{
-			ChannelId: channelID,
-			Message:   "I processed your request but couldn't post the response. Here it is privately: " + message,
-			RootId:    rootID,
-		})
-		return errors.Wrap(createErr, "failed to create response post")
-	}
-
-	return nil
 }
 
-func buildMessages(botUserID string, posts *model.PostList, api plugin.API) []Message {
-	rand.Seed(time.Now().UnixNano())
-
-	var messages []Message
-	for _, postId := range posts.Order {
-		role := "user"
-		post := posts.Posts[postId]
-		content := post.Message
-		if post.UserId == botUserID {
-			role = "assistant"
-		} else {
-			content = fmt.Sprintf("%s: %s", post.UserId, post.Message)
-		}
-
-		message := Message{
-			Content: content,
-			Format:  "text",
-			Role:    role,
-			TurnID:  strconv.Itoa(rand.Intn(100000)), // random int as string
-		}
-
-		messages = append(messages, message)
-	}
-
-	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
-		messages[i], messages[j] = messages[j], messages[i]
-	}
-
-	return messages
-}
+// parseMaestroArgs was used by the old /maestro command and is no longer needed.
+// func (p *Plugin) parseMaestroArgs(argsString string) (taskName string, numMessages int, err error) {
+// ... (original function content) ...
+// }

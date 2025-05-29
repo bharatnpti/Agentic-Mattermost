@@ -1,24 +1,9 @@
 package command
 
 import (
-	// "fmt" // No longer needed if all tests using it are removed
-	// "testing" // No longer needed if all tests are removed
-
-	// "github.com/mattermost/mattermost/server/public/model" // No longer needed
-	// "github.com/mattermost/mattermost/server/public/plugin/plugintest" // No longer needed
-	// "github.com/stretchr/testify/assert" // No longer needed
-	// "github.com/stretchr/testify/mock" // No longer needed
-)
-
-// All tests related to parseOpenAICommandArgs and executeOpenAICommand have been removed
-// as the /maestro slash command is no longer implemented in this package.
-// Tests for the `hello` command would remain here if they existed.
-// For this task, we assume only OpenAI related tests were present and are now removed.
-
-// If there were tests for other commands like 'hello', they would look like this:
-/*
-import (
+	"net/http"
 	"testing"
+
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/stretchr/testify/assert"
@@ -26,48 +11,149 @@ import (
 )
 
 func TestExecuteHelloCommand(t *testing.T) {
-	apiMock := &plugintest.API{} // Basic mock, can be extended if needed
-	defer apiMock.AssertExpectations(t)
+	apiMock := &plugintest.API{}
+	// For LogInfo, if used within executeHelloCommand (currently it's not, but good practice)
+	apiMock.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 	deps := HandlerDependencies{
 		API:       apiMock,
-		BotUserID: "testbotid",
-		// Other fields like GetOpenAIAPIKey, CallOpenAIFunc, OpenAIAPIURL, ParseArguments
-		// would be nil or placeholder funcs if not used by hello.
+		BotUserID: "botid",
 	}
-	handler := NewCommandHandler(deps).(*Handler) // Assuming NewCommandHandler returns the concrete Handler type or an interface.
+	handler := &Handler{dependencies: deps}
 
-	t.Run("hello to specific user", func(t *testing.T) {
-		args := &model.CommandArgs{
-			Command:   "/hello testuser",
-			UserId:    "userID",
-			ChannelId: "channelID",
-		}
-		// No API calls are expected for the basic hello command in its current form.
-		// If it made API calls, those would be mocked on apiMock.
+	tests := []struct {
+		name                 string
+		commandArgs          *model.CommandArgs
+		expectedResponseType string
+		expectedText         string
+	}{
+		{
+			name: "Valid username",
+			commandArgs: &model.CommandArgs{
+				Command: "/hello @testuser",
+			},
+			expectedResponseType: model.CommandResponseTypeInChannel,
+			expectedText:         "Hello, @testuser!",
+		},
+		{
+			name: "No username provided",
+			commandArgs: &model.CommandArgs{
+				Command: "/hello",
+			},
+			expectedResponseType: model.CommandResponseTypeEphemeral,
+			expectedText:         "Please specify a username to say hello to.",
+		},
+		{
+			name: "Username with extra spaces in command",
+			commandArgs: &model.CommandArgs{
+				Command: "/hello   @user.name  ",
+			},
+			expectedResponseType: model.CommandResponseTypeInChannel,
+			expectedText:         "Hello, @user.name!",
+		},
+	}
 
-		response, err := handler.Handle(args) // Or call executeHelloCommand directly if public/testable
-
-		assert.Nil(t, err)
-		assert.NotNil(t, response)
-		assert.Equal(t, model.CommandResponseTypeInChannel, response.ResponseType)
-		assert.Equal(t, "Hello, testuser", response.Text)
-	})
-
-	t.Run("hello with no user specified", func(t *testing.T) {
-		args := &model.CommandArgs{
-			Command:   "/hello",
-			UserId:    "userID",
-			ChannelId: "channelID",
-		}
-		response, err := handler.Handle(args)
-
-		assert.Nil(t, err)
-		assert.NotNil(t, response)
-		assert.Equal(t, model.CommandResponseTypeEphemeral, response.ResponseType)
-		assert.Equal(t, "Please specify a username", response.Text)
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := handler.executeHelloCommand(tt.commandArgs)
+			assert.Equal(t, tt.expectedResponseType, response.ResponseType)
+			assert.Equal(t, tt.expectedText, response.Text)
+		})
+	}
+	apiMock.AssertExpectations(t)
 }
-*/
-// For now, the file is left nearly empty as no other command tests were present.
-// If new commands are added to command.go, their tests should be added here.
+
+func TestHandle_HelloCommand(t *testing.T) {
+	apiMock := &plugintest.API{}
+	// Mock RegisterCommand if it were called within Handle or New, but it's in NewCommandHandler
+	// Mock LogInfo if executeHelloCommand were to use it
+	apiMock.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+
+	deps := HandlerDependencies{
+		API:       apiMock,
+		BotUserID: "botid",
+	}
+	// Note: NewCommandHandler also registers the command. For Handle tests,
+	// we assume registration has happened or test the handler logic directly.
+	// Here, we are testing the Handler's Handle method, not NewCommandHandler.
+	handler := &Handler{dependencies: deps}
+
+	commandArgs := &model.CommandArgs{
+		Command: "/hello @testuser",
+	}
+
+	response, err := handler.Handle(commandArgs)
+	assert.NoError(t, err)
+	assert.NotNil(t, response)
+	assert.Equal(t, model.CommandResponseTypeInChannel, response.ResponseType)
+	assert.Equal(t, "Hello, @testuser!", response.Text)
+	apiMock.AssertExpectations(t)
+}
+
+func TestHandle_UnknownCommand(t *testing.T) {
+	apiMock := &plugintest.API{}
+	apiMock.On("LogWarn", "Received unknown command trigger", "unknowncommand", "/unknowncommand arg1", mock.Anything).Once()
+
+
+	deps := HandlerDependencies{
+		API:       apiMock,
+		BotUserID: "botid",
+	}
+	handler := &Handler{dependencies: deps}
+
+	commandArgs := &model.CommandArgs{
+		Command: "/unknowncommand arg1",
+	}
+
+	response, err := handler.Handle(commandArgs)
+	assert.NoError(t, err)
+	assert.NotNil(t, response)
+	assert.Equal(t, model.CommandResponseTypeEphemeral, response.ResponseType)
+	assert.Contains(t, response.Text, "Unknown command: /unknowncommand arg1")
+	assert.Contains(t, response.Text, "Currently, only '/hello' is supported.")
+	apiMock.AssertExpectations(t)
+}
+
+func TestNewCommandHandler(t *testing.T) {
+	apiMock := &plugintest.API{}
+
+	// Mock the RegisterCommand call
+	apiMock.On("RegisterCommand", mock.MatchedBy(func(cmd *model.Command) bool {
+		return cmd.Trigger == "hello"
+	})).Return(nil).Once() // Expect it to be called once for 'hello'
+
+	deps := HandlerDependencies{
+		API:       apiMock,
+		BotUserID: "botid",
+	}
+
+	commandHandler := NewCommandHandler(deps)
+	assert.NotNil(t, commandHandler)
+
+	// Verify that RegisterCommand was called
+	apiMock.AssertExpectations(t)
+}
+
+func TestNewCommandHandler_RegisterCommand_Error(t *testing.T) {
+	apiMock := &plugintest.API{}
+
+	// Mock the RegisterCommand call to return an error
+	expectedErr := model.NewAppError("RegisterCommand", "some.id", nil, "failed to register", http.StatusInternalServerError)
+	apiMock.On("RegisterCommand", mock.AnythingOfType("*model.Command")).Return(expectedErr).Once()
+	apiMock.On("LogError", "Failed to register hello command", "error", expectedErr).Once()
+
+
+	deps := HandlerDependencies{
+		API:       apiMock,
+		BotUserID: "botid",
+	}
+
+	commandHandler := NewCommandHandler(deps)
+	assert.NotNil(t, commandHandler) // Handler is still returned, error is logged
+
+	apiMock.AssertExpectations(t)
+}
+
+// EOF
+```
