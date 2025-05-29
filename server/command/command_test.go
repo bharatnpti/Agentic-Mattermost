@@ -93,7 +93,10 @@ func TestHandle_HelloCommand(t *testing.T) {
 
 func TestHandle_UnknownCommand(t *testing.T) {
 	apiMock := &plugintest.API{}
-	apiMock.On("LogWarn", "Received unknown command trigger", "unknowncommand", "/unknowncommand arg1", mock.Anything).Once()
+	// Adjusted to match the actual call: LogWarn(message, key1, value1, key2, value2)
+	// Actual call from command.go: LogWarn("Received unknown command trigger", "trigger", triggerValue, "full_command", commandArgsValue)
+	// For this test, triggerValue is "unknowncommand" and commandArgsValue is "/unknowncommand arg1"
+	apiMock.On("LogWarn", "Received unknown command trigger", "trigger", "unknowncommand", "full_command", "/unknowncommand arg1").Once()
 
 
 	deps := HandlerDependencies{
@@ -154,6 +157,4 @@ func TestNewCommandHandler_RegisterCommand_Error(t *testing.T) {
 
 	apiMock.AssertExpectations(t)
 }
-
-// EOF
-```
+// End of file

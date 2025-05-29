@@ -157,3 +157,13 @@ func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
 // func (p *Plugin) parseMaestroArgs(argsString string) (taskName string, numMessages int, err error) {
 // ... (original function content) ...
 // }
+
+// ServeHTTP handles HTTP requests to the plugin.
+func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
+	if p.router == nil {
+		p.API.LogError("HTTP router not initialized")
+		http.Error(w, "Plugin router not initialized", http.StatusInternalServerError)
+		return
+	}
+	p.router.ServeHTTP(w, r)
+}

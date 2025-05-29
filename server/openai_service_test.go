@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -160,6 +159,4 @@ func TestCallOpenAIAPIFunc_ResponseBodyReadError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to read response body")
 }
-
-// EOF
-```
+// End of file

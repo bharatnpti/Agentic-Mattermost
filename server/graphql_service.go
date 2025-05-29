@@ -353,9 +353,9 @@ func (c *GraphQLSubscriptionClient) Connect(ctx context.Context) error {
 func (c *GraphQLSubscriptionClient) Close() error {
 	if c.conn != nil {
 		// Send terminate message based on protocol
-		terminateMsgType := "connection_terminate" // For graphql-ws
+		// terminateMsgType := "connection_terminate" // For graphql-ws // Intentionally removed as unused
 		if c.protocol == "graphql-transport-ws" {
-			terminateMsgType = "terminate" // This might be 'complete' for the subscription ID or a general terminate
+			// terminateMsgType = "terminate" // This might be 'complete' for the subscription ID or a general terminate // Intentionally removed as unused
 			// For graphql-transport-ws, usually you send 'complete' for each subscription ID.
 			// A general 'terminate' might not be standard for this protocol.
 			// However, simply closing the connection is often sufficient.

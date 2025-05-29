@@ -534,6 +534,4 @@ func TestMessageHasBeenPosted_SuccessfulPathToProcessTask(t *testing.T) {
 	
 	mocks.API.AssertExpectations(t)
 }
-
-// EOF
-```
+// End of file

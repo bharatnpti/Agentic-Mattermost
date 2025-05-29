@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -83,7 +81,7 @@ func (s *mockGraphQLWsServer) defaultHandler(w http.ResponseWriter, r *http.Requ
 		http.Error(w, fmt.Sprintf("could not upgrade: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
+
 	s.mu.Lock()
 	s.conn = conn
 	s.mu.Unlock()
@@ -100,7 +98,7 @@ func (s *mockGraphQLWsServer) defaultHandler(w http.ResponseWriter, r *http.Requ
 	// Handle connection_init
 	var initMsg GraphQLMessage
 	if err := conn.ReadJSON(&initMsg); err != nil {
-		return 
+		return
 	}
 	if initMsg.Type != "connection_init" {
 		return
@@ -115,7 +113,7 @@ func (s *mockGraphQLWsServer) defaultHandler(w http.ResponseWriter, r *http.Requ
 	if err := conn.ReadJSON(&subMsg); err != nil {
 		return
 	}
-	
+
 	if s.messageHandler != nil {
 		s.messageHandler(nil, subMsg) // t can be nil if not running in a test context for handler
 	}
@@ -130,7 +128,7 @@ func (s *mockGraphQLWsServer) defaultHandler(w http.ResponseWriter, r *http.Requ
 func TestCallGraphQLAgentFunc_Success(t *testing.T) {
 	mockServer := newMockGraphQLWsServer(t, nil)
 	mockServer.protocolToUse = "graphql-ws" // Ensure client uses this
-	mockServer.defaultHandler = func(w http.ResponseWriter, r *http.Request) {
+	testSpecificHandler := func(w http.ResponseWriter, r *http.Request) {
 		// This is the server-side handler for the WebSocket connection
 		conn, err := upgrader.Upgrade(w, r, http.Header{"Sec-WebSocket-Protocol": []string{mockServer.protocolToUse}})
 		require.NoError(t, err)
@@ -172,13 +170,13 @@ func TestCallGraphQLAgentFunc_Success(t *testing.T) {
 		}
 		err = conn.WriteJSON(GraphQLMessage{ID: msg.ID, Type: dataMsgType, Payload: respPayload})
 		require.NoError(t, err)
-		
+
 		// 5. Optionally, send 'complete'
 		// completeMsgType := "complete" // for both
 		// err = conn.WriteJSON(GraphQLMessage{ID: msg.ID, Type: completeMsgType})
 		// require.NoError(t, err)
 	}
-	mockServer.server.Config.Handler = http.HandlerFunc(mockServer.defaultHandler)
+	mockServer.server.Config.Handler = http.HandlerFunc(testSpecificHandler)
 
 
 	messages := []Message{{Role: "user", Content: "Hello", Format: "text", TurnID: "t0"}}
@@ -212,7 +210,7 @@ func TestCallGraphQLAgentFunc_ConnectionFailure(t *testing.T) {
 func TestCallGraphQLAgentFunc_SubscriptionFailure_AckNotReceived(t *testing.T) {
 	mockServer := newMockGraphQLWsServer(t, nil)
 	mockServer.protocolToUse = "graphql-ws"
-	mockServer.defaultHandler = func(w http.ResponseWriter, r *http.Request) {
+	testSpecificHandler_AckNotReceived := func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, http.Header{"Sec-WebSocket-Protocol": []string{mockServer.protocolToUse}})
 		require.NoError(t, err)
 		defer conn.Close()
@@ -222,13 +220,13 @@ func TestCallGraphQLAgentFunc_SubscriptionFailure_AckNotReceived(t *testing.T) {
 		err = conn.ReadJSON(&msg)
 		require.NoError(t, err)
 		require.Equal(t, "connection_init", msg.Type)
-		
+
 		// 2. Send something other than 'connection_ack' or close connection
 		// conn.WriteJSON(GraphQLMessage{Type: "error", Payload: "No ack for you"})
 		// Or simply close:
 		// server closes connection instead of sending ack
 	}
-	mockServer.server.Config.Handler = http.HandlerFunc(mockServer.defaultHandler)
+	mockServer.server.Config.Handler = http.HandlerFunc(testSpecificHandler_AckNotReceived)
 
 
 	messages := []Message{{Role: "user", Content: "Hello", Format: "text", TurnID: "t0"}}
@@ -243,7 +241,7 @@ func TestCallGraphQLAgentFunc_SubscriptionFailure_AckNotReceived(t *testing.T) {
 func TestCallGraphQLAgentFunc_TimeoutWaitingForMessage(t *testing.T) {
 	mockServer := newMockGraphQLWsServer(t, nil)
 	mockServer.protocolToUse = "graphql-ws"
-	mockServer.defaultHandler = func(w http.ResponseWriter, r *http.Request) {
+	testSpecificHandler_Timeout := func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, http.Header{"Sec-WebSocket-Protocol": []string{mockServer.protocolToUse}})
 		require.NoError(t, err)
 		defer conn.Close()
@@ -258,13 +256,13 @@ func TestCallGraphQLAgentFunc_TimeoutWaitingForMessage(t *testing.T) {
 		// 2. Expect 'start'
 		err = conn.ReadJSON(&msg)
 		require.NoError(t, err)
-		
+
 		// 3. Server never sends a 'data'/'next' message or 'complete'
 		// Client should time out based on its context.
 		// Keep the connection open but silent.
 		time.Sleep(2 * time.Second) // Keep connection alive beyond typical test timeout if client has short timeout
 	}
-	mockServer.server.Config.Handler = http.HandlerFunc(mockServer.defaultHandler)
+	mockServer.server.Config.Handler = http.HandlerFunc(testSpecificHandler_Timeout)
 
 	// CallGraphQLAgentFunc has an internal 30-second timeout.
 	// We need to make this test timeout shorter if we want to test it explicitly.
@@ -279,14 +277,14 @@ func TestCallGraphQLAgentFunc_TimeoutWaitingForMessage(t *testing.T) {
 	// The `CallGraphQLAgentFunc` has `ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)`
 
 	messages := []Message{{Role: "user", Content: "Hello", Format: "text", TurnID: "t0"}}
-	
+
 	// To make this test faster, we can't easily change the 30s timeout in CallGraphQLAgentFunc
 	// without refactoring it. We'll assume the timeout works as intended.
 	// If this test is run in a context where 30s is too long, it would need adjustment
 	// of the source code or a more complex test setup.
 	// For now, let's just test the error message for timeout.
 	t.Log("Testing timeout, this might take up to 30 seconds due to internal timeout in CallGraphQLAgentFunc...")
-	
+
 	startTime := time.Now()
 	_, err := CallGraphQLAgentFunc("apiKey", "conv1", "user1", "tenant1", "channel1", messages, mockServer.URL())
 	duration := time.Since(startTime)
@@ -295,7 +293,7 @@ func TestCallGraphQLAgentFunc_TimeoutWaitingForMessage(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "timeout waiting for first message", "Expected timeout error")
-	
+
 	// Check if it actually timed out near the expected time (e.g. < 35s, > 25s if it was 30s)
 	// This is hard to assert precisely.
 	// For this test, we just check the error message.
@@ -307,7 +305,7 @@ func TestCallGraphQLAgentFunc_TimeoutWaitingForMessage(t *testing.T) {
 func TestCallGraphQLAgentFunc_GraphQLReturnsError(t *testing.T) {
 	mockServer := newMockGraphQLWsServer(t, nil)
 	mockServer.protocolToUse = "graphql-ws"
-	mockServer.defaultHandler = func(w http.ResponseWriter, r *http.Request) {
+	testSpecificHandler_GraphQLError := func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, http.Header{"Sec-WebSocket-Protocol": []string{mockServer.protocolToUse}})
 		require.NoError(t, err)
 		defer conn.Close()
@@ -331,7 +329,7 @@ func TestCallGraphQLAgentFunc_GraphQLReturnsError(t *testing.T) {
 		err = conn.WriteJSON(GraphQLMessage{ID: msg.ID, Type: dataMsgType, Payload: errorPayload})
 		require.NoError(t, err)
 	}
-	mockServer.server.Config.Handler = http.HandlerFunc(mockServer.defaultHandler)
+	mockServer.server.Config.Handler = http.HandlerFunc(testSpecificHandler_GraphQLError)
 
 	messages := []Message{{Role: "user", Content: "Hello", Format: "text", TurnID: "t0"}}
 	_, err := CallGraphQLAgentFunc("apiKey", "conv1", "user1", "tenant1", "channel1", messages, mockServer.URL())
@@ -349,5 +347,4 @@ func TestCallGraphQLAgentFunc_GraphQLReturnsError(t *testing.T) {
 // Note: The complexity of accurately mocking a WebSocket server and various protocol states
 // means these tests might need refinement or may hit edge cases depending on environment/timing.
 // The current implementation attempts a basic mock server.
-// EOF
-```
+// End of file
