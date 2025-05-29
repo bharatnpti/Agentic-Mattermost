@@ -280,14 +280,25 @@ func (p *Plugin) parseMaestroArgsNewFormat(argsString string) (taskText string, 
 // processMaestroTask contains the core logic for handling a maestro task.
 func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID string, userID string, rootID string) error {
 	p.API.LogInfo("Processing Maestro task", "taskName", taskName)
-	//if taskName == "" { // Should be caught by parser, but defense in depth
-	//	p.API.SendEphemeralPost(userID, &model.Post{
-	//		ChannelId: channelID,
-	//		Message:   "Please provide a task name. Usage: !maestro <task_name> [-n <num_messages>]",
-	//		RootId:    rootID,
-	//	})
-	//	return fmt.Errorf("taskName is empty")
-	//}
+
+	// Get the original post to determine proper threading
+	originalPost, appErr := p.API.GetPost(rootID)
+	if appErr != nil {
+		p.API.LogError("Failed to get original post", "post_id", rootID, "error", appErr.Error())
+		// Continue with the original rootID if we can't fetch the post
+	}
+
+	// Determine the correct RootId for threading
+	// If the original post is already in a thread, use its RootId
+	// If the original post is not in a thread, use its own ID as the RootId
+	var threadRootID string
+	if originalPost != nil && originalPost.RootId != "" {
+		threadRootID = originalPost.RootId
+	} else {
+		threadRootID = rootID
+	}
+
+	p.API.LogInfo("Threading info", "originalPostId", rootID, "threadRootID", threadRootID)
 
 	// Fetch messages
 	// For a prefix command, the rootID is the ID of the '!maestro' post itself.
@@ -297,11 +308,17 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 	postList, appErr := p.API.GetPostsForChannel(channelID, 0, numMessages+10) // Fetch more to ensure we can filter and still get numMessages
 	if appErr != nil {
 		p.API.LogError("Failed to fetch posts for channel", "channel_id", channelID, "error", appErr.Error())
-		p.API.SendEphemeralPost(userID, &model.Post{
+		// Send error as thread reply instead of ephemeral
+		errorPost := &model.Post{
 			ChannelId: channelID,
 			Message:   "An error occurred while fetching messages. Please try again later.",
-			RootId:    rootID,
-		})
+			RootId:    threadRootID,
+			UserId:    p.botUserID,
+		}
+		_, createErr := p.API.CreatePost(errorPost)
+		if createErr != nil {
+			p.API.LogError("Failed to create error post", "error", createErr.Error())
+		}
 		return errors.Wrap(appErr, "failed to fetch posts")
 	}
 
@@ -327,11 +344,17 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 	// Check if the WebSocket URL is configured
 	if webSocketURL == "" {
 		p.API.LogError("GraphQL Agent WebSocket URL is not configured.", "user_id", userID, "task_name", taskName)
-		p.API.SendEphemeralPost(userID, &model.Post{
+		// Send error as thread reply instead of ephemeral
+		errorPost := &model.Post{
 			ChannelId: channelID,
 			Message:   "The GraphQL Agent WebSocket URL is not configured. Please contact an administrator.",
-			RootId:    rootID,
-		})
+			RootId:    threadRootID,
+			UserId:    p.botUserID,
+		}
+		_, createErr := p.API.CreatePost(errorPost)
+		if createErr != nil {
+			p.API.LogError("Failed to create error post", "error", createErr.Error())
+		}
 		return fmt.Errorf("GraphQL Agent WebSocket URL is not configured")
 	}
 
@@ -340,11 +363,17 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 	messages, err := CallGraphQLAgentFunc("apiKey", graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, fetchedMessages, webSocketURL) // Use configured WebSocket URL
 	if err != nil {
 		p.API.LogError("Error calling GraphQL Agent for !maestro task", "error", err.Error(), "user_id", userID, "task_name", taskName, "webSocketURL", webSocketURL)
-		p.API.SendEphemeralPost(userID, &model.Post{
-			ChannelId: channelID, // Mattermost channel ID for the ephemeral post
+		// Send error as thread reply instead of ephemeral
+		errorPost := &model.Post{
+			ChannelId: channelID,
 			Message:   "An error occurred while contacting the agent. Please try again later or contact an administrator.",
-			RootId:    rootID,
-		})
+			RootId:    threadRootID,
+			UserId:    p.botUserID,
+		}
+		_, createErr := p.API.CreatePost(errorPost)
+		if createErr != nil {
+			p.API.LogError("Failed to create error post", "error", createErr.Error())
+		}
 		return err
 	}
 
@@ -352,23 +381,41 @@ func (p *Plugin) processMaestroTask(taskName string, numMessages int, channelID 
 
 	if len(messages) == 0 {
 		p.API.LogInfo("GraphQL Agent returned no messages for !maestro task", "user_id", userID, "task_name", taskName)
-		// It's good practice to inform the user even if there are no messages.
-		p.API.SendEphemeralPost(userID, &model.Post{
-			ChannelId: channelID, // Mattermost channel ID
+		// Send "no messages" response as thread reply instead of ephemeral
+		noMessagesPost := &model.Post{
+			ChannelId: channelID,
 			Message:   "The agent processed your request but returned no messages.",
-			RootId:    rootID,
-		})
+			RootId:    threadRootID,
+			UserId:    p.botUserID,
+		}
+		_, createErr := p.API.CreatePost(noMessagesPost)
+		if createErr != nil {
+			p.API.LogError("Failed to create no messages post", "error", createErr.Error())
+		}
 		return nil
 	}
 
 	message := messages
 
-	ephemeralPost := &model.Post{
+	// Create the response post as a thread reply instead of ephemeral
+	responsePost := &model.Post{
 		ChannelId: channelID,
 		Message:   message,
-		//RootId:    rootID, // Thread to the original !maestro message
+		RootId:    threadRootID, // Thread to the original !maestro message
+		UserId:    p.botUserID,
 	}
-	p.API.SendEphemeralPost(userID, ephemeralPost)
+
+	_, createErr := p.API.CreatePost(responsePost)
+	if createErr != nil {
+		p.API.LogError("Failed to create response post", "error", createErr.Error())
+		// Fallback to ephemeral post if CreatePost fails
+		p.API.SendEphemeralPost(userID, &model.Post{
+			ChannelId: channelID,
+			Message:   "I processed your request but couldn't post the response. Here it is privately: " + message,
+			RootId:    rootID,
+		})
+		return errors.Wrap(createErr, "failed to create response post")
+	}
 
 	return nil
 }
