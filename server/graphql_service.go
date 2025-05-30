@@ -182,32 +182,52 @@ var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID str
 	fmt.Println(query) // Logging the query can be verbose, consider reducing for production
 
 	err := client.Subscribe("agent-subscription", query, nil, func(payload interface{}) {
+		log.Printf("[GraphQLCallback DEBUG] Entered callback with payload: %+v", payload)
+
 		payloadBytes, marshalErr := json.Marshal(payload)
 		if marshalErr != nil {
-			log.Printf("Error marshalling payload in callback: %v", marshalErr)
-			errChan <- fmt.Errorf("payload marshal error: %w", marshalErr)
+			log.Printf("[GraphQLCallback DEBUG] Error marshalling payload: %v", marshalErr)
+			select {
+			case errChan <- fmt.Errorf("payload marshal error: %w", marshalErr):
+			default: log.Printf("[GraphQLCallback DEBUG] errChan full or unavailable when sending marshalErr")
+			}
 			return
 		}
+		log.Printf("[GraphQLCallback DEBUG] Payload marshalled: %s", string(payloadBytes))
 
-		var response AgentResponse // Uses the new AgentResponse struct for parsing
+		var response AgentResponse
 		if unmarshalErr := json.Unmarshal(payloadBytes, &response); unmarshalErr != nil {
-			log.Printf("Error unmarshalling payload in callback: %v", unmarshalErr)
-			errChan <- fmt.Errorf("payload unmarshal error: %w", unmarshalErr)
+			log.Printf("[GraphQLCallback DEBUG] Error unmarshalling payloadBytes: %v", unmarshalErr)
+			select {
+			case errChan <- fmt.Errorf("payload unmarshal error: %w", unmarshalErr):
+			default: log.Printf("[GraphQLCallback DEBUG] errChan full or unavailable when sending unmarshalErr")
+			}
 			return
 		}
+		log.Printf("[GraphQLCallback DEBUG] Payload unmarshalled into AgentResponse: %+v", response)
 
-		// Handle response (including errors from GraphQL itself)
-		processedMessage := handleAgentSubscriptionResponse(response) // Renamed for clarity
+		processedMessage := handleAgentSubscriptionResponse(response)
+		log.Printf("[GraphQLCallback DEBUG] Processed message from handleAgentSubscriptionResponse: %+v", processedMessage)
+
 		if processedMessage != nil && processedMessage.Content != "" {
+			log.Printf("[GraphQLCallback DEBUG] Attempting to send content to contentChan: %s", processedMessage.Content)
 			select {
 			case contentChan <- processedMessage.Content:
-			default: // Avoid blocking if channel is full (should not happen with buffer 1)
+				log.Printf("[GraphQLCallback DEBUG] Successfully sent content to contentChan.")
+			default:
+				log.Printf("[GraphQLCallback DEBUG] contentChan was full or unavailable; message dropped.")
 			}
 		} else if len(response.Errors) > 0 {
-			// If there's no content but there are GraphQL errors, signal this
-			errChan <- fmt.Errorf("GraphQL error: %s", response.Errors[0].Message)
+			log.Printf("[GraphQLCallback DEBUG] GraphQL response contained errors: %+v. Sending to errChan.", response.Errors)
+			select {
+			case errChan <- fmt.Errorf("GraphQL error: %s", response.Errors[0].Message):
+				 log.Printf("[GraphQLCallback DEBUG] Successfully sent GraphQL error to errChan.")
+			default:
+				 log.Printf("[GraphQLCallback DEBUG] errChan full or unavailable when sending GraphQL error.")
+			}
+		} else {
+			log.Printf("[GraphQLCallback DEBUG] No content in processedMessage and no GraphQL errors. Nothing sent to contentChan or errChan.")
 		}
-		// If no content and no errors, it might be an empty message list, handled by timeout later
 	})
 
 	if err != nil {
@@ -359,23 +379,18 @@ func (c *GraphQLSubscriptionClient) Connect(ctx context.Context) error {
 
 // Close signals the listener to stop, waits for it, then closes the WebSocket connection.
 func (c *GraphQLSubscriptionClient) Close() error {
+	log.Printf("[GraphQLClient DEBUG] Close: Aggressive Version - Calling internalCancel().")
 	c.internalCancel() // Signal Listen to stop
 
-	// Wait for Listen goroutine to finish
-	if c.listenDone != nil { 
-		select {
-		case <-c.listenDone:
-			// Listen goroutine confirmed shutdown
-		case <-time.After(5 * time.Second): // Safety timeout
-			log.Println("Timeout waiting for Listen goroutine to stop during Close")
-		}
-	}
+	// No waiting for listenDone in this version.
 
 	if c.conn != nil {
+		log.Printf("[GraphQLClient DEBUG] Close: Aggressive Version - Calling c.conn.Close() immediately.")
 		err := c.conn.Close()
 		c.conn = nil // Ensure conn is nil after closing
 		return err
 	}
+	log.Printf("[GraphQLClient DEBUG] Close: Aggressive Version - Connection was already nil.")
 	return nil
 }
 
@@ -417,145 +432,125 @@ func (c *GraphQLSubscriptionClient) Subscribe(subscriptionID, query string, vari
 // It should be run in a separate goroutine.
 // It exits when the context is cancelled or an unrecoverable error occurs.
 func (c *GraphQLSubscriptionClient) Listen(ctx context.Context) error {
-	defer close(c.listenDone) // Ensure listenDone is closed on any exit path
+    defer close(c.listenDone) // Ensure listenDone is closed on any exit path
 
-	if c.conn == nil {
-		return fmt.Errorf("cannot listen: connection is not established")
-	}
+    if c.conn == nil {
+        // It's possible internalCancel was called before Listen even started if Connect failed
+        // and Close was called immediately.
+        if c.internalCtx.Err() != nil {
+             log.Printf("[GraphQLClient DEBUG] Listen: Connection is nil and internalCtx is done, exiting early.")
+             return errors.New("connection closed by client (internal, connection nil at start)")
+        }
+        if ctx.Err() != nil {
+            log.Printf("[GraphQLClient DEBUG] Listen: Connection is nil and main ctx is done, exiting early.")
+            return ctx.Err()
+        }
+        log.Printf("[GraphQLClient DEBUG] Listen: Connection is nil but contexts are active. This is unexpected if Connect succeeded.")
+        return fmt.Errorf("cannot listen: connection is not established")
+    }
 
-	for {
-		// **CRITICAL:** Proactively check for cancellation before any read attempt.
-		select {
-		case <-c.internalCtx.Done():
-			log.Println("Listen: internalCtx done, exiting.")
-			return errors.New("connection closed by client (internal)")
-		case <-ctx.Done():
-			log.Println("Listen: main ctx done, exiting.")
-			return ctx.Err()
-		default:
-			// Proceed only if not cancelled.
-		}
+    for {
+        // CRITICAL: Proactively check for cancellation before any read attempt.
+        select {
+        case <-c.internalCtx.Done():
+            log.Printf("[GraphQLClient DEBUG] Listen: Loop start, internalCtx done, exiting.")
+            return errors.New("connection closed by client (internal)")
+        case <-ctx.Done():
+            log.Printf("[GraphQLClient DEBUG] Listen: Loop start, main ctx done, exiting.")
+            return ctx.Err()
+        default:
+            // Proceed only if not cancelled.
+        }
 
-		// Set a short read deadline to ensure ReadJSON doesn't block indefinitely
-		// if the connection is in a weird state but not yet fully closed
-		// in a way that ReadJSON would immediately return an error.
-		if err := c.conn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
-			log.Printf("Listen: Error setting read deadline: %v. Assuming connection is dead.", err)
-			// If SetReadDeadline fails, it's likely the connection is already dead.
-			// We should check contexts to return the most accurate error.
-			if c.internalCtx.Err() != nil {
-				return errors.New("connection closed by client (internal, on set deadline error)")
-			}
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return fmt.Errorf("set read deadline: %w", err)
-		}
+        // Set a short read deadline
+        if err := c.conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+            // If setting deadline fails, the connection is likely unusable.
+            // Check contexts to attribute error correctly.
+            if c.internalCtx.Err() != nil {
+                log.Printf("[GraphQLClient DEBUG] Listen: Error setting read deadline, internalCtx is done: %v", err)
+                return errors.New("connection closed by client (internal, on set deadline)")
+            }
+            if ctx.Err() != nil {
+                log.Printf("[GraphQLClient DEBUG] Listen: Error setting read deadline, main ctx is done: %v", err)
+                return ctx.Err()
+            }
+            log.Printf("[GraphQLClient DEBUG] Listen: Error setting read deadline: %v. Assuming connection is dead.", err)
+            return fmt.Errorf("set read deadline: %w", err)
+        }
 
-		var msg GraphQLMessage
-		err := c.conn.ReadJSON(&msg) // This is the critical call
+        var msg GraphQLMessage
+        err := c.conn.ReadJSON(&msg)
 
-		// After ReadJSON, check if the connection became nil due to a concurrent Close.
-		// This is a safeguard, though the proactive checks should ideally prevent this state.
-		if c.conn == nil {
-			 log.Println("Listen: Connection became nil during ReadJSON or before clearing deadline, exiting.")
-			 // Prefer context errors if available, as they indicate the shutdown trigger.
-			 if c.internalCtx.Err() != nil {
-				return errors.New("connection closed by client (internal, conn nil post-read)")
-			 }
-			 if ctx.Err() != nil {
-				return ctx.Err()
-			 }
-			 return errors.New("connection became nil")
-		}
-		
-		// Only clear the read deadline if the error was a timeout.
-		// If it was a more serious error, the connection might be truly dead,
-		// and trying to operate on it (even to clear a deadline) could be risky.
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			 if errClear := c.conn.SetReadDeadline(time.Time{}); errClear != nil {
-				log.Printf("Listen: Error clearing read deadline after timeout: %v. Assuming connection is dead.", errClear)
-				// As above, prefer context errors if available.
-				if c.internalCtx.Err() != nil {
-					return errors.New("connection closed by client (internal, on clear deadline error)")
-				}
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				return fmt.Errorf("clear read deadline: %w", errClear)
-			 }
-		}
+        // If err is nil, a message was successfully read.
+        if err == nil {
+            log.Printf("[GraphQLClient DEBUG] Listen: Successfully read a message from WebSocket: Type=%s, ID=%s, Payload=%+v", msg.Type, msg.ID, msg.Payload)
+            // Clear the deadline after a successful read before handling the message.
+            if c.conn != nil { // Check conn still valid
+                 // Only clear deadline if conn is not nil, otherwise SetReadDeadline can panic
+                if errClear := c.conn.SetReadDeadline(time.Time{}); errClear != nil {
+                    log.Printf("[GraphQLClient DEBUG] Listen: Error clearing read deadline after successful read: %v. Connection might be compromised.", errClear)
+                    // Decide if this is fatal. It might be if subsequent reads or writes fail.
+                    // For now, log and proceed with handling the message.
+                }
+            }
+            c.handleMessage(msg)
+            continue // Successfully read and handled, continue to next read.
+        }
 
+        // err is not nil, so an error occurred during ReadJSON.
+        // Check contexts first, as cancellation might have happened during the read.
+        if c.internalCtx.Err() != nil {
+            log.Printf("[GraphQLClient DEBUG] Listen: ReadJSON error '%v', but internalCtx is done. Attributing to internal close.", err)
+            return errors.New("connection closed by client (internal, during/after read error)")
+        }
+        if ctx.Err() != nil {
+            log.Printf("[GraphQLClient DEBUG] Listen: ReadJSON error '%v', but main ctx is done. Attributing to main context.", err)
+            return ctx.Err()
+        }
 
-		if err != nil {
-			// Block until a context is done, or proceed if one is already done.
-			// This ensures that if a context was cancelled during ReadJSON, we see it.
-			// Add a short timeout to this select itself to prevent indefinite block if contexts are truly fine
-			// and ReadJSON returned an error for other reasons.
-			select {
-			case <-c.internalCtx.Done():
-				log.Printf("Listen: internalCtx done after ReadJSON error (%v), exiting.", err)
-				return errors.New("connection closed by client (internal, after read error)")
-			case <-ctx.Done():
-				log.Printf("Listen: main ctx done after ReadJSON error (%v), exiting.", err)
-				return ctx.Err()
-			case <-time.After(50 * time.Millisecond): // Short timeout
-				// Contexts didn't report done quickly. Now analyze 'err'.
-				log.Printf("Listen: Contexts not immediately done after ReadJSON error (%v). Analyzing error.", err)
-			}
+        // Contexts are not done, so the error is genuinely from ReadJSON.
+        // Clear the read deadline if the error was a timeout, connection might still be used for next iteration.
+        if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+            if c.conn != nil { // Check conn still valid
+                if errClear := c.conn.SetReadDeadline(time.Time{}); errClear != nil {
+                     log.Printf("[GraphQLClient DEBUG] Listen: Error clearing read deadline after ReadJSON timeout: %v. Connection might be compromised.", errClear)
+                     // If clearing deadline fails, it's a bad sign. Consider returning an error.
+                     // For now, log and allow loop to continue to re-check contexts.
+                }
+            }
+            log.Printf("[GraphQLClient DEBUG] Listen: ReadJSON timeout, contexts appear active, continuing loop to check contexts.")
+            continue // Read timed out, loop again to check contexts and try another read.
+        }
 
-			// Now, proceed with error analysis if contexts weren't found done above quickly.
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				// Before continuing, one final check of contexts. If a context is now reporting done,
-				// then this timeout was likely part of its shutdown sequence.
-				if c.internalCtx.Err() != nil {
-					 log.Printf("Listen: internalCtx is now done after net.Error timeout for err=%v. Exiting.", err)
-					 return errors.New("connection closed by client (internal, during net.Error timeout handling)")
-				}
-				if ctx.Err() != nil {
-					 log.Printf("Listen: ctx is now done after net.Error timeout for err=%v. Exiting.", err)
-					 return ctx.Err()
-				}
-				log.Println("Listen: ReadJSON timeout, contexts still appear active, continuing loop.")
-				continue
-			}
+        // Handle specific WebSocket close errors or "use of closed network connection".
+        // These indicate the connection is definitively closed.
+        if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) ||
+            (strings.Contains(err.Error(), "use of closed network connection")) { // Check for "use of closed network connection"
+            log.Printf("[GraphQLClient DEBUG] Listen: WebSocket connection closed gracefully or expectedly: %v", err)
+            return nil // Normal or expected closure.
+        }
 
-			// Handle specific WebSocket close errors or "use of closed network connection".
-			// These indicate the connection is definitively closed.
-			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) ||
-				(err != nil && strings.Contains(err.Error(), "use of closed network connection")) {
-				log.Printf("Listen: WebSocket connection closed gracefully or expectedly: %v", err)
-				return nil // Normal or expected closure, signal graceful exit from Listen.
-			}
-
-			// Any other error is unexpected and likely fatal for this listener.
-			log.Printf("Listen: Unexpected error reading JSON message: %v", err)
-			return fmt.Errorf("unexpected read error: %w", err)
-		}
-		
-		// If read was successful, process the message.
-		// Ensure conn is not nil before processing.
-		if c.conn == nil { // Should be redundant due to earlier check, but as a safeguard.
-			 log.Println("Listen: Connection became nil before handling message, exiting.")
-			 return errors.New("connection became nil before handling message")
-		}
-		c.handleMessage(msg)
-	}
+        // Any other error is unexpected and likely fatal for this listener.
+        log.Printf("[GraphQLClient DEBUG] Listen: Unexpected error reading JSON message: %v", err)
+        return fmt.Errorf("unexpected read error: %w", err)
+    }
 }
 
 // handleMessage dispatches incoming WebSocket messages to appropriate callbacks or handles control messages.
 func (c *GraphQLSubscriptionClient) handleMessage(msg GraphQLMessage) {
-	fmt.Printf("Received WebSocket message: Type=%s, ID=%s\n", msg.Type, msg.ID) // Debug log
+	log.Printf("[GraphQLClient DEBUG] handleMessage: Processing message: Type=%s, ID=%s", msg.Type, msg.ID)
+	// fmt.Printf("Received WebSocket message: Type=%s, ID=%s\n", msg.Type, msg.ID) // Original Debug log
 	switch msg.Type {
 	case "next", "data": // 'data' for graphql-ws, 'next' for graphql-transport-ws
 		if callback, exists := c.callbacks[msg.ID]; exists {
 			if msg.Payload != nil {
+				log.Printf("[GraphQLClient DEBUG] handleMessage: Invoking callback for ID %s", msg.ID)
 				callback(msg.Payload)
 			} else {
-				log.Printf("Received %s message with nil payload for ID %s", msg.Type, msg.ID)
+				log.Printf("[GraphQLClient DEBUG] handleMessage: Received %s message with nil payload for ID %s", msg.Type, msg.ID)
 			}
 		} else {
-			log.Printf("No callback registered for subscription ID %s", msg.ID)
+			log.Printf("[GraphQLClient DEBUG] handleMessage: No callback registered for subscription ID %s", msg.ID)
 		}
 	case "error": // Used by both protocols for subscription-specific errors
 		log.Printf("Subscription error for ID %s: %v", msg.ID, msg.Payload)
