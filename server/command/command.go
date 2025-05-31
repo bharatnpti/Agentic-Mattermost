@@ -28,6 +28,7 @@ type Command interface {
 }
 
 const helloCommandTrigger = "hello"
+const agentCommandTrigger = "agent"
 
 // const openaiCommandTrigger = "maestro" // Removed
 
@@ -42,6 +43,18 @@ func NewCommandHandler(deps HandlerDependencies) Command {
 		AutocompleteData: model.NewAutocompleteData(helloCommandTrigger, "[@username]", "Username to say hello to"),
 	}); err != nil {
 		deps.API.LogError("Failed to register hello command", "error", err)
+	}
+
+	if err := deps.API.RegisterCommand(&model.Command{
+		Trigger:          agentCommandTrigger,
+		DisplayName:      "Agent Command",
+		Description:      "Interact with the agent.",
+		AutoComplete:     true,
+		AutoCompleteDesc: "Available commands: resume",
+		AutoCompleteHint: "[subcommand]",
+		AutocompleteData: model.NewAutocompleteData(agentCommandTrigger, "[subcommand]", "resume"),
+	}); err != nil {
+		deps.API.LogError("Failed to register agent command", "error", err)
 	}
 
 	// Registration for openaiCommandTrigger removed
@@ -75,6 +88,8 @@ func (h *Handler) Handle(args *model.CommandArgs) (*model.CommandResponse, error
 	switch trigger {
 	case helloCommandTrigger:
 		return h.executeHelloCommand(args), nil
+	case agentCommandTrigger:
+		return h.executeAgentCommand(args), nil
 	// Case for openaiCommandTrigger removed
 	default:
 		// This default case should ideally not be reached if Mattermost only sends registered commands.
@@ -82,9 +97,34 @@ func (h *Handler) Handle(args *model.CommandArgs) (*model.CommandResponse, error
 		h.dependencies.API.LogWarn("Received unknown command trigger", "trigger", trigger, "full_command", args.Command)
 		return &model.CommandResponse{
 			ResponseType: model.CommandResponseTypeEphemeral,
-			Text:         fmt.Sprintf("Unknown command: %s. Currently, only '/%s' is supported.", args.Command, helloCommandTrigger),
+			Text:         fmt.Sprintf("Unknown command: %s. Currently, only '/%s' and '/%s' are supported.", args.Command, helloCommandTrigger, agentCommandTrigger),
 		}, nil
 	}
 }
 
 // executeOpenAICommand function has been removed.
+
+func (h *Handler) executeAgentCommand(args *model.CommandArgs) *model.CommandResponse {
+	commandFields := strings.Fields(args.Command)
+	if len(commandFields) < 2 {
+		return &model.CommandResponse{
+			ResponseType: model.CommandResponseTypeEphemeral,
+			Text:         "Please specify a subcommand. Available: resume",
+		}
+	}
+
+	subcommand := commandFields[1]
+	switch subcommand {
+	case "resume":
+		// Placeholder for actual resume logic
+		return &model.CommandResponse{
+			ResponseType: model.CommandResponseTypeEphemeral,
+			Text:         "Agent resume command executed.",
+		}
+	default:
+		return &model.CommandResponse{
+			ResponseType: model.CommandResponseTypeEphemeral,
+			Text:         fmt.Sprintf("Unknown subcommand: %s. Available: resume", subcommand),
+		}
+	}
+}

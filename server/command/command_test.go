@@ -114,7 +114,7 @@ func TestHandle_UnknownCommand(t *testing.T) {
 	assert.NotNil(t, response)
 	assert.Equal(t, model.CommandResponseTypeEphemeral, response.ResponseType)
 	assert.Contains(t, response.Text, "Unknown command: /unknowncommand arg1")
-	assert.Contains(t, response.Text, "Currently, only '/hello' is supported.")
+	assert.Contains(t, response.Text, "Currently, only '/hello' and '/agent' are supported.")
 	apiMock.AssertExpectations(t)
 }
 
@@ -125,6 +125,15 @@ func TestNewCommandHandler(t *testing.T) {
 	apiMock.On("RegisterCommand", mock.MatchedBy(func(cmd *model.Command) bool {
 		return cmd.Trigger == "hello"
 	})).Return(nil).Once() // Expect it to be called once for 'hello'
+
+	// Expect a call for the 'agent' command
+	apiMock.On("RegisterCommand", mock.MatchedBy(func(cmd *model.Command) bool {
+		return cmd.Trigger == agentCommandTrigger &&
+			cmd.DisplayName == "Agent Command" &&
+			cmd.Description == "Interact with the agent." &&
+			cmd.AutoCompleteDesc == "Available commands: resume" &&
+			cmd.AutoCompleteHint == "[subcommand]"
+	})).Return(nil).Once()
 
 	deps := HandlerDependencies{
 		API:       apiMock,
@@ -141,10 +150,19 @@ func TestNewCommandHandler(t *testing.T) {
 func TestNewCommandHandler_RegisterCommand_Error(t *testing.T) {
 	apiMock := &plugintest.API{}
 
-	// Mock the RegisterCommand call to return an error
+	// Mock the RegisterCommand call to return an error for the first command (hello)
 	expectedErr := model.NewAppError("RegisterCommand", "some.id", nil, "failed to register", http.StatusInternalServerError)
-	apiMock.On("RegisterCommand", mock.AnythingOfType("*model.Command")).Return(expectedErr).Once()
+	apiMock.On("RegisterCommand", mock.MatchedBy(func(cmd *model.Command) bool {
+		return cmd.Trigger == "hello"
+	})).Return(expectedErr).Once()
 	apiMock.On("LogError", "Failed to register hello command", "error", expectedErr).Once()
+
+	// Also mock the second call (agent), assuming it could also fail or succeed.
+	// For this test, let's assume it succeeds to isolate the error logging for the first one.
+	// If we wanted to test error on the second, we'd make this one return error and the first nil.
+	apiMock.On("RegisterCommand", mock.MatchedBy(func(cmd *model.Command) bool {
+		return cmd.Trigger == agentCommandTrigger
+	})).Return(nil).Once()
 
 
 	deps := HandlerDependencies{
