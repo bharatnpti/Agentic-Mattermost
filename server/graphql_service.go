@@ -4,22 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors" // Added for errors.New
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
-	// Message struct is now in model.go, ensure it's imported if needed, or this service uses its own types.
-	// For CallGraphQLAgentFunc, it takes []main.Message, so that type must be known.
-	// It's defined in model.go in the same package, so it should be fine.
 )
-
-// GraphQLAgentAPIURL is the URL for the GraphQL agent API.
-// Changed to var for testability (allowing modification for network error tests).
-var GraphQLAgentAPIURL = "https://ia-platform-contract-agent.dev.apps.oneai.yo-digital.com/graphiql?path=/graphql"
 
 // AgentRequestInput defines the structure for the 'request' input object in the GraphQL query.
 type AgentRequestInput struct {
@@ -106,45 +101,164 @@ type AgentDetails struct {
 	Messages              []MessageOutput       `json:"messages"` // Using MessageOutput here
 }
 
+// GraphQLMessage represents a WebSocket message for GraphQL subscriptions
+type GraphQLMessage struct {
+	ID      string      `json:"id,omitempty"`
+	Type    string      `json:"type"`
+	Payload interface{} `json:"payload,omitempty"`
+}
+
+// ResponseProcessor handles processing of multiple AgentResponse objects
+type ResponseProcessor struct {
+	processedResponses int
+	totalMessages      int
+	mu                 sync.RWMutex
+	messageChan        chan<- string
+	errorChan          chan<- error
+	ctx                context.Context
+}
+
+// NewResponseProcessor creates a new response processor
+func NewResponseProcessor(ctx context.Context, messageChan chan<- string, errorChan chan<- error) *ResponseProcessor {
+	return &ResponseProcessor{
+		processedResponses: 0,
+		totalMessages:      0,
+		messageChan:        messageChan,
+		errorChan:          errorChan,
+		ctx:                ctx,
+	}
+}
+
+// ProcessAgentResponse processes a single AgentResponse and sends messages to channels
+func (rp *ResponseProcessor) ProcessAgentResponse(response AgentResponse) {
+	rp.mu.Lock()
+	rp.processedResponses++
+	responseNum := rp.processedResponses
+	rp.mu.Unlock()
+
+	log.Printf("[ResponseProcessor] Processing AgentResponse #%d", responseNum)
+
+	// Handle GraphQL errors first
+	if len(response.Errors) > 0 {
+		for _, gqlErr := range response.Errors {
+			log.Printf("[ResponseProcessor] GraphQL Error in response #%d: %s", responseNum, gqlErr.Message)
+			select {
+			case rp.errorChan <- fmt.Errorf("GraphQL error in response #%d: %s", responseNum, gqlErr.Message):
+			case <-rp.ctx.Done():
+				log.Printf("[ResponseProcessor] Context cancelled while sending error")
+				return
+			default:
+				log.Printf("[ResponseProcessor] Error channel full, dropping error message")
+			}
+		}
+		return // Don't process messages if there are errors
+	}
+
+	// Process anonymization entities
+	if len(response.Data.Agent.AnonymizationEntities) > 0 {
+		log.Printf("[ResponseProcessor] Response #%d contains %d anonymization entities",
+			responseNum, len(response.Data.Agent.AnonymizationEntities))
+		for i, entity := range response.Data.Agent.AnonymizationEntities {
+			log.Printf("[ResponseProcessor] Entity %d - Type: %s, Value: %s, Replacement: %s",
+				i+1, entity.Type, entity.Value, entity.Replacement)
+		}
+	}
+
+	// Process messages
+	if len(response.Data.Agent.Messages) > 0 {
+		log.Printf("[ResponseProcessor] Response #%d contains %d messages",
+			responseNum, len(response.Data.Agent.Messages))
+
+		for _, msg := range response.Data.Agent.Messages {
+			rp.mu.Lock()
+			rp.totalMessages++
+			msgNum := rp.totalMessages
+			rp.mu.Unlock()
+
+			log.Printf("[ResponseProcessor] Processing message #%d from response #%d - Role: %s, Format: %s, TurnID: %s",
+				msgNum, responseNum, msg.Role, msg.Format, msg.TurnID)
+
+			if msg.Content != "" {
+				// Send message content to channel
+				select {
+				case rp.messageChan <- msg.Content:
+					log.Printf("[ResponseProcessor] Successfully sent message #%d to channel: %.100s...",
+						msgNum, msg.Content)
+				case <-rp.ctx.Done():
+					log.Printf("[ResponseProcessor] Context cancelled while sending message #%d", msgNum)
+					return
+				default:
+					log.Printf("[ResponseProcessor] Message channel full, dropping message #%d", msgNum)
+				}
+			} else {
+				log.Printf("[ResponseProcessor] Message #%d has empty content, skipping", msgNum)
+			}
+		}
+	} else {
+		log.Printf("[ResponseProcessor] Response #%d contains no messages", responseNum)
+	}
+
+	log.Printf("[ResponseProcessor] Completed processing response #%d (total messages processed: %d)",
+		responseNum, rp.totalMessages)
+}
+
+// GetStats returns processing statistics
+func (rp *ResponseProcessor) GetStats() (int, int) {
+	rp.mu.RLock()
+	defer rp.mu.RUnlock()
+	return rp.processedResponses, rp.totalMessages
+}
+
 // escapeString handles any special characters in input strings for safety
 func escapeString(input string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(input, `"`, `\"`), "\n", "\\n")
 }
 
-// CallGraphQLAgentFunc connects to a GraphQL subscription endpoint and returns the first message content.
-// It takes []main.Message (from model.go) as input.
-var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+// CallGraphQLAgentFunc connects to a GraphQL subscription endpoint and continuously processes multiple AgentResponse objects.
+// Enhanced to better handle multiple responses from the GraphQL server.
+var CallGraphQLAgentFunc = func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, messageChan chan<- string, errorChan chan<- error) {
+	// This context is for this specific agent call + subscription lifecycle.
+	// It will be cancelled if parentCtx is cancelled or if cancel() is called explicitly.
+	ctx, cancel := context.WithCancel(parentCtx)
+	defer cancel() // Ensures that if parentCtx isn't done, this specific operation's context is cleaned up on exit.
+
+	processor := NewResponseProcessor(ctx, messageChan, errorChan)
 
 	client := NewGraphQLSubscriptionClient(apiURL)
-	defer client.Close()
+	// defer client.Close() is crucial. It's called when CallGraphQLAgentFunc exits.
+	// This happens if:
+	// 1. parentCtx is cancelled (and thus ctx is cancelled).
+	// 2. Connect or Subscribe fails.
+	// 3. client.Listen(ctx) returns (due to server close, fatal error, or its ctx being done).
+	defer func() {
+		log.Printf("[CallGraphQLAgentFunc] Cleaning up client connection...")
+		if err := client.Close(); err != nil {
+			log.Printf("[CallGraphQLAgentFunc] Error closing GraphQL client: %v", err)
+		}
+	}()
 
-	if err := client.Connect(ctx); err != nil {
-		// Log or return a more specific error instead of log.Fatal
-		return "", fmt.Errorf("connection failed: %w", err)
+	if err := client.Connect(ctx); err != nil { // Use the cancellable ctx for connect
+		log.Printf("[CallGraphQLAgentFunc] Connection failed: %v", err)
+		select {
+		case errorChan <- fmt.Errorf("graphql connection failed: %w", err):
+		case <-parentCtx.Done(): // Check parentCtx if the errorChan send blocks
+			log.Printf("[CallGraphQLAgentFunc] Parent context done while sending connection error.")
+		}
+		return
 	}
 
-	fmt.Println("Connected to GraphQL subscription endpoint")
-
-	contentChan := make(chan string, 1)
-	errChan := make(chan error, 1) // Channel for errors from callback
-
+	log.Println("[CallGraphQLAgentFunc] Connected to GraphQL. Setting up subscription...")
+	// ... (your query setup code remains the same) ...
 	var messageBlockBuffer bytes.Buffer
 	messageBlockBuffer.WriteString("[")
 	for i, msg := range messages {
-		// Here, msg is of type main.Message (from model.go)
-		// It should have Role, Content, Format, TurnID
 		messageInput := MessageInput{
 			Content: msg.Content,
-			Format:  msg.Format, // Ensure main.Message has Format
+			Format:  msg.Format,
 			Role:    msg.Role,
-			TurnID:  msg.TurnID, // Ensure main.Message has TurnID
+			TurnID:  msg.TurnID,
 		}
-		escapedContent := escapeString(messageInput.Content)
-		// Format and Role are typically enums or fixed strings, so direct escaping might not be needed
-		// unless they can contain special JSON characters. TurnID should also be safe.
-		// For simplicity, assuming Format and Role are safe.
+		escapedContent := escapeString(messageInput.Content) // Ensure escapeString is defined
 		messageBlockBuffer.WriteString(fmt.Sprintf(`{
 			content: "%s",
 			format: "%s",
@@ -178,126 +292,113 @@ var CallGraphQLAgentFunc = func(apiKey string, conversationID string, userID str
 		}
 	}`, escapeString(conversationID), escapeString(channelIDSystemContext), escapeString(tenantID), escapeString(userID), messageBlock)
 
-	fmt.Println(query) // Logging the query can be verbose, consider reducing for production
+	log.Printf("[CallGraphQLAgentFunc] GraphQL Query: %s", query)
 
-	err := client.Subscribe("agent-subscription", query, nil, func(payload interface{}) {
-		log.Printf("[GraphQLCallback DEBUG] Entered callback with payload: %+v", payload)
-
+	subscribeErr := client.Subscribe("agent-subscription", query, nil, func(payload interface{}) {
+		log.Printf("[GraphQLCallback] Received new payload from GraphQL server")
 		payloadBytes, marshalErr := json.Marshal(payload)
 		if marshalErr != nil {
-			log.Printf("[GraphQLCallback DEBUG] Error marshalling payload: %v", marshalErr)
+			log.Printf("[GraphQLCallback] Error marshalling payload: %v", marshalErr)
 			select {
-			case errChan <- fmt.Errorf("payload marshal error: %w", marshalErr):
-			default:
-				log.Printf("[GraphQLCallback DEBUG] errChan full or unavailable when sending marshalErr")
+			case errorChan <- fmt.Errorf("payload marshal error: %w", marshalErr):
+			case <-ctx.Done(): // Use the operation's context
 			}
 			return
 		}
-		log.Printf("[GraphQLCallback DEBUG] Payload marshalled: %s", string(payloadBytes))
-
 		var response AgentResponse
 		if unmarshalErr := json.Unmarshal(payloadBytes, &response); unmarshalErr != nil {
-			log.Printf("[GraphQLCallback DEBUG] Error unmarshalling payloadBytes: %v", unmarshalErr)
+			log.Printf("[GraphQLCallback] Error unmarshalling payload: %v", unmarshalErr)
 			select {
-			case errChan <- fmt.Errorf("payload unmarshal error: %w", unmarshalErr):
-			default:
-				log.Printf("[GraphQLCallback DEBUG] errChan full or unavailable when sending unmarshalErr")
+			case errorChan <- fmt.Errorf("payload unmarshal error: %w", unmarshalErr):
+			case <-ctx.Done():
 			}
 			return
 		}
-		log.Printf("[GraphQLCallback DEBUG] Payload unmarshalled into AgentResponse: %+v", response)
-
-		processedMessage := handleAgentSubscriptionResponse(response)
-		log.Printf("[GraphQLCallback DEBUG] Processed message from handleAgentSubscriptionResponse: %+v", processedMessage)
-
-		if processedMessage != nil && processedMessage.Content != "" {
-			log.Printf("[GraphQLCallback DEBUG] Attempting to send content to contentChan: %s", processedMessage.Content)
-			select {
-			case contentChan <- processedMessage.Content:
-				log.Printf("[GraphQLCallback DEBUG] Successfully sent content to contentChan.")
-			default:
-				log.Printf("[GraphQLCallback DEBUG] contentChan was full or unavailable; message dropped.")
-			}
-		} else if len(response.Errors) > 0 {
-			log.Printf("[GraphQLCallback DEBUG] GraphQL response contained errors: %+v. Sending to errChan.", response.Errors)
-			select {
-			case errChan <- fmt.Errorf("GraphQL error: %s", response.Errors[0].Message):
-				log.Printf("[GraphQLCallback DEBUG] Successfully sent GraphQL error to errChan.")
-			default:
-				log.Printf("[GraphQLCallback DEBUG] errChan full or unavailable when sending GraphQL error.")
-			}
-		} else {
-			log.Printf("[GraphQLCallback DEBUG] No content in processedMessage and no GraphQL errors. Nothing sent to contentChan or errChan.")
-		}
+		processor.ProcessAgentResponse(response)
+		processedCount, totalMsgCount := processor.GetStats()
+		log.Printf("[GraphQLCallback] Processing stats: %d responses processed, %d total messages sent", processedCount, totalMsgCount)
 	})
 
-	if err != nil {
-		// log.Fatal("Subscription failed:", err) // Avoid fatal
-		return "", fmt.Errorf("subscription failed: %w", err)
+	if subscribeErr != nil {
+		log.Printf("[CallGraphQLAgentFunc] Subscription failed: %v", subscribeErr)
+		select {
+		case errorChan <- fmt.Errorf("graphql subscription failed: %w", subscribeErr):
+		case <-parentCtx.Done():
+		}
+		return // This will trigger defer client.Close()
 	}
 
-	fmt.Println("Subscription started, listening for messages...")
+	log.Println("[CallGraphQLAgentFunc] Subscription started, now listening for AgentResponse objects until server closes or an error occurs...")
+	listenErr := client.Listen(ctx) // Pass the cancellable ctx
 
-	go func() {
-		// Listen can return context.DeadlineExceeded if the parent context times out,
-		// or another error if the connection drops.
-		if listenErr := client.Listen(ctx); listenErr != nil && listenErr != context.Canceled && listenErr != context.DeadlineExceeded {
-			log.Printf("Listen error: %v", listenErr)
-			// Propagate listen error only if it's not a context cancellation/timeout
-			// as those are handled by the select statement.
-			// Ensure errChan can receive this or handle appropriately.
+	// After Listen returns:
+	if listenErr != nil {
+		if errors.Is(listenErr, context.Canceled) || errors.Is(listenErr, context.DeadlineExceeded) {
+			// This means ctx (derived from parentCtx or cancelled by CallGraphQLAgentFunc's own logic) was done.
+			log.Printf("[CallGraphQLAgentFunc] Listener stopped due to context cancellation/deadline: %v", listenErr)
+		} else if strings.Contains(listenErr.Error(), "client explicitly closed") || strings.Contains(listenErr.Error(), "client connection field is nil") {
+			log.Printf("[CallGraphQLAgentFunc] Listener stopped as client connection was intentionally closed: %v", listenErr)
+		} else {
+			// Other errors (network, unexpected server close, etc.)
+			log.Printf("[CallGraphQLAgentFunc] Listener returned an error: %v", listenErr)
 			select {
-			case errChan <- fmt.Errorf("listener error: %w", listenErr):
-			default: // Avoid blocking
+			case errorChan <- fmt.Errorf("graphql listener error: %w", listenErr):
+			case <-parentCtx.Done():
+				log.Printf("[CallGraphQLAgentFunc] Parent context done while sending listener error.")
+			default: // Non-blocking send
+				log.Printf("[CallGraphQLAgentFunc] Error channel full or unavailable when sending listener error: %v", listenErr)
 			}
 		}
-	}()
-
-	select {
-	case content := <-contentChan:
-		return content, nil
-	case err := <-errChan: // Check for errors from callback or listener
-		return "", err
-	case <-ctx.Done():
-		return "", fmt.Errorf("timeout waiting for first message: %w", ctx.Err())
+	} else {
+		// listenErr is nil - implies server closed connection gracefully (e.g., CloseNormalClosure).
+		log.Println("[CallGraphQLAgentFunc] GraphQL subscription ended gracefully by server.")
 	}
+
+	processedCount, totalMsgCount := processor.GetStats()
+	log.Printf("[CallGraphQLAgentFunc] GraphQL processing finished for this session. Final stats: %d responses processed, %d total messages sent",
+		processedCount, totalMsgCount)
+	// defer client.Close() will run.
 }
 
-// handleAgentSubscriptionResponse processes the response from the GraphQL subscription.
-// It returns the first MessageOutput if available, or nil.
-func handleAgentSubscriptionResponse(response AgentResponse) *MessageOutput { // Returns *MessageOutput
+// handleAgentSubscriptionResponseMultiple processes the response from the GraphQL subscription.
+// It returns all MessageOutput messages instead of just the first one.
+// Note: This function is kept for backward compatibility but the new ResponseProcessor is preferred.
+func handleAgentSubscriptionResponseMultiple(response AgentResponse) []*MessageOutput {
+	var results []*MessageOutput
+
 	if len(response.Errors) > 0 {
 		for _, err := range response.Errors {
-			log.Printf("GraphQL Error: %s\n", err.Message) // Log all errors
+			log.Printf("GraphQL Error: %s\n", err.Message)
 		}
-		// Depending on requirements, you might return an error here or just log
-		return nil // No message content if there are GraphQL errors
+		return results // Return empty slice if there are GraphQL errors
 	}
 
-	fmt.Println("=== Agent Response ===") // Debug logging
+	log.Println("=== Agent Response ===")
 
 	if len(response.Data.Agent.AnonymizationEntities) > 0 {
-		fmt.Println("Anonymization Entities:")
+		log.Println("Anonymization Entities:")
 		for _, entity := range response.Data.Agent.AnonymizationEntities {
-			fmt.Printf("  Type: %s, Value: %s, Replacement: %s\n",
+			log.Printf("  Type: %s, Value: %s, Replacement: %s\n",
 				entity.Type, entity.Value, entity.Replacement)
 		}
 	}
 
 	if len(response.Data.Agent.Messages) > 0 {
-		firstMsg := &response.Data.Agent.Messages[0] // This is of type MessageOutput
-		fmt.Println("Messages:")
-		for _, msg := range response.Data.Agent.Messages {
-			fmt.Printf("  Role: %s, Format: %s, TurnID: %s\n",
-				msg.Role, msg.Format, msg.TurnID)
-			fmt.Printf("  Content: %s\n", msg.Content)
-			fmt.Println("  ---")
+		log.Printf("Processing %d messages:", len(response.Data.Agent.Messages))
+		for i, msg := range response.Data.Agent.Messages {
+			log.Printf("  Message %d - Role: %s, Format: %s, TurnID: %s\n",
+				i+1, msg.Role, msg.Format, msg.TurnID)
+			log.Printf("  Content: %s\n", msg.Content)
+			log.Println("  ---")
+
+			// Add each message to results
+			msgCopy := msg
+			results = append(results, &msgCopy)
 		}
-		return firstMsg // Return the first message of type MessageOutput
 	}
 
-	fmt.Println("======================") // Debug logging
-	return nil                            // No messages in the response
+	log.Println("======================")
+	return results
 }
 
 // GraphQLSubscriptionClient manages a GraphQL subscription over WebSocket.
@@ -308,7 +409,8 @@ type GraphQLSubscriptionClient struct {
 	protocol       string
 	internalCtx    context.Context
 	internalCancel context.CancelFunc
-	listenDone     chan struct{} // Add this channel
+	listenDone     chan struct{}
+	mu             sync.RWMutex // Added mutex for thread safety
 }
 
 // NewGraphQLSubscriptionClient creates a new client for GraphQL subscriptions.
@@ -319,7 +421,7 @@ func NewGraphQLSubscriptionClient(wsURL string) *GraphQLSubscriptionClient {
 		callbacks:      make(map[string]func(interface{})),
 		internalCtx:    iCtx,
 		internalCancel: iCancel,
-		listenDone:     make(chan struct{}), // Initialize here
+		listenDone:     make(chan struct{}),
 	}
 }
 
@@ -338,254 +440,362 @@ func (c *GraphQLSubscriptionClient) Connect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dial error: %w", err)
 	}
+
+	c.mu.Lock()
 	c.conn = conn
+	c.mu.Unlock()
 
 	if resp != nil && len(resp.Header.Get("Sec-WebSocket-Protocol")) > 0 {
 		c.protocol = resp.Header.Get("Sec-WebSocket-Protocol")
 	} else {
-		c.protocol = "graphql-ws" // Default fallback
+		c.protocol = "graphql-ws"
 	}
-	fmt.Printf("Using protocol: %s\n", c.protocol)
+	log.Printf("[GraphQLClient] Using protocol: %s\n", c.protocol)
 
 	initMsgType := "connection_init"
-	// Payload for graphql-transport-ws can be just {}, for graphql-ws it's also often {} or not needed.
 	initPayload := make(map[string]interface{})
 
 	if err := c.sendMessage(GraphQLMessage{Type: initMsgType, Payload: initPayload}); err != nil {
-		c.conn.Close() // Close connection on error
+		c.conn.Close()
 		return fmt.Errorf("init error: %w", err)
 	}
 
 	// Wait for acknowledgment
 	var ackMsg GraphQLMessage
-	// Set a read deadline for the ack
-	c.conn.SetReadDeadline(time.Now().Add(10 * time.Second)) // Timeout for ack
+	c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if err := c.conn.ReadJSON(&ackMsg); err != nil {
 		c.conn.Close()
 		return fmt.Errorf("ack read error: %w", err)
 	}
-	c.conn.SetReadDeadline(time.Time{}) // Clear read deadline
+	c.conn.SetReadDeadline(time.Time{})
 
 	expectedAckType := "connection_ack"
-	// graphql-transport-ws uses 'connection_ack', graphql-ws also uses 'connection_ack' or 'GQL_CONNECTION_ACK'
-	// The library or server might normalize this; check specific server docs if issues arise.
 
 	if ackMsg.Type != expectedAckType {
 		c.conn.Close()
 		return fmt.Errorf("expected ack type '%s', got: '%s'", expectedAckType, ackMsg.Type)
 	}
 
+	log.Printf("[GraphQLClient] Connection established and acknowledged")
 	return nil
 }
 
-// Close signals the listener to stop, waits for it, then closes the WebSocket connection.
+// Close signals the listener to stop and closes the WebSocket connection.
 func (c *GraphQLSubscriptionClient) Close() error {
-	log.Printf("[GraphQLClient DEBUG] Close: Aggressive Version - Calling internalCancel().")
-	c.internalCancel() // Signal Listen to stop
+	log.Printf("[GraphQLClient] Initiating close sequence")
+	c.internalCancel()
 
-	// No waiting for listenDone in this version.
+	c.mu.Lock()
+	conn := c.conn
+	c.conn = nil
+	c.mu.Unlock()
 
-	if c.conn != nil {
-		log.Printf("[GraphQLClient DEBUG] Close: Aggressive Version - Calling c.conn.Close() immediately.")
-		err := c.conn.Close()
-		c.conn = nil // Ensure conn is nil after closing
+	if conn != nil {
+		log.Printf("[GraphQLClient] Closing WebSocket connection")
+		err := conn.Close()
 		return err
 	}
-	log.Printf("[GraphQLClient DEBUG] Close: Aggressive Version - Connection was already nil.")
+	log.Printf("[GraphQLClient] Connection was already closed")
 	return nil
 }
 
 func (c *GraphQLSubscriptionClient) sendMessage(msg GraphQLMessage) error {
-	if c.conn == nil {
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
 		return fmt.Errorf("cannot send message: connection is not established or already closed")
 	}
-	fmt.Printf("Sending WebSocket message: Type=%s\n", msg.Type) // Debug log
-	// Set a write deadline
-	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	err := c.conn.WriteJSON(msg)
-	c.conn.SetWriteDeadline(time.Time{}) // Clear deadline
+
+	log.Printf("[GraphQLClient] Sending WebSocket message: Type=%s, ID=%s\n", msg.Type, msg.ID)
+	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	err := conn.WriteJSON(msg)
+	conn.SetWriteDeadline(time.Time{})
 	return err
 }
 
 // Subscribe sends a subscription request over the WebSocket.
 func (c *GraphQLSubscriptionClient) Subscribe(subscriptionID, query string, variables map[string]interface{}, callback func(interface{})) error {
+	c.mu.Lock()
 	c.callbacks[subscriptionID] = callback
+	c.mu.Unlock()
 
 	var msgType string
 	if c.protocol == "graphql-transport-ws" {
 		msgType = "subscribe"
-	} else { // graphql-ws
-		msgType = "start" // or "GQL_START"
+	} else {
+		msgType = "start"
+	}
+
+	payload := map[string]interface{}{
+		"query": query,
+	}
+	if variables != nil {
+		payload["variables"] = variables
 	}
 
 	msg := GraphQLMessage{
-		ID:   subscriptionID,
-		Type: msgType,
-		Payload: SubscriptionPayload{
-			Query:     query,
-			Variables: variables,
-		},
+		ID:      subscriptionID,
+		Type:    msgType,
+		Payload: payload,
 	}
+
+	log.Printf("[GraphQLClient] Subscribing with ID: %s", subscriptionID)
 	return c.sendMessage(msg)
 }
 
-// Listen continuously reads messages from the WebSocket and dispatches them.
-// It should be run in a separate goroutine.
-// It exits when the context is cancelled or an unrecoverable error occurs.
-// Listen continuously reads messages from the WebSocket and dispatches them.
-// It should be run in a separate goroutine.
-// It exits when the context is cancelled or an unrecoverable error occurs.
+// Listen starts listening for messages from the WebSocket connection.
 func (c *GraphQLSubscriptionClient) Listen(ctx context.Context) error {
-	defer close(c.listenDone) // Ensure listenDone is closed on any exit path
+	defer close(c.listenDone) // Signal that Listen has finished its execution.
+	log.Printf("[GraphQLClient] Starting to listen for messages. Will continue until context is done, client is closed, or a fatal websocket error occurs.")
 
-	if c.conn == nil {
-		// It's possible internalCancel was called before Listen even started if Connect failed
-		// and Close was called immediately.
-		if c.internalCtx.Err() != nil {
-			log.Printf("[GraphQLClient DEBUG] Listen: Connection is nil and internalCtx is done, exiting early.")
-			return errors.New("connection closed by client (internal, connection nil at start)")
-		}
-		if ctx.Err() != nil {
-			log.Printf("[GraphQLClient DEBUG] Listen: Connection is nil and main ctx is done, exiting early.")
-			return ctx.Err()
-		}
-		log.Printf("[GraphQLClient DEBUG] Listen: Connection is nil but contexts are active. This is unexpected if Connect succeeded.")
-		return fmt.Errorf("cannot listen: connection is not established")
-	}
+	messageCount := 0
 
-	// Create a channel to receive messages
-	msgChan := make(chan GraphQLMessage, 1)
-	errChan := make(chan error, 1)
-
-	// Start a goroutine to read messages
-	go func() {
-		defer close(msgChan)
-		defer close(errChan)
-
-		for {
-			var msg GraphQLMessage
-			err := c.conn.ReadJSON(&msg)
-
-			if err != nil {
-				// Check if it's a normal close
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) ||
-					strings.Contains(err.Error(), "use of closed network connection") {
-					log.Printf("[GraphQLClient DEBUG] Listen: WebSocket connection closed: %v", err)
-					return // Exit gracefully
-				}
-
-				// Send error to main loop
-				select {
-				case errChan <- err:
-				case <-c.internalCtx.Done():
-					return
-				case <-ctx.Done():
-					return
-				}
-				return
-			}
-
-			// Send message to main loop
-			select {
-			case msgChan <- msg:
-			case <-c.internalCtx.Done():
-				return
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	// Main event loop
 	for {
+		var msg GraphQLMessage
+		var err error
+
+		// Prioritize checking for stop signals (from parent context or internal client.Close())
 		select {
-		case <-c.internalCtx.Done():
-			log.Printf("[GraphQLClient DEBUG] Listen: internalCtx done, exiting.")
-			return errors.New("connection closed by client (internal)")
-
 		case <-ctx.Done():
-			log.Printf("[GraphQLClient DEBUG] Listen: main ctx done, exiting.")
+			log.Printf("[GraphQLClient] Main context done (from CallGraphQLAgentFunc), stopping listener (processed %d messages). Error: %v", messageCount, ctx.Err())
 			return ctx.Err()
-
-		case msg, ok := <-msgChan:
-			if !ok {
-				// Channel closed, reader goroutine exited
-				log.Printf("[GraphQLClient DEBUG] Listen: Message channel closed, reader exited.")
-				return nil
-			}
-			log.Printf("[GraphQLClient DEBUG] Listen: Successfully received message: Type=%s, ID=%s", msg.Type, msg.ID)
-			c.handleMessage(msg)
-
-		case err, ok := <-errChan:
-			if !ok {
-				// Channel closed, should not happen before msgChan
-				log.Printf("[GraphQLClient DEBUG] Listen: Error channel closed unexpectedly.")
-				return nil
-			}
-			log.Printf("[GraphQLClient DEBUG] Listen: Received error from reader: %v", err)
-			return fmt.Errorf("read error: %w", err)
+		case <-c.internalCtx.Done(): // c.internalCtx is cancelled by c.Close()
+			log.Printf("[GraphQLClient] Internal context done (client.Close() called), stopping listener (processed %d messages). Error: %v", messageCount, c.internalCtx.Err())
+			return fmt.Errorf("client explicitly closed: %w", c.internalCtx.Err())
+		default:
+			// No immediate stop signal, proceed to attempt a read.
 		}
-	}
-}
 
-// handleMessage dispatches incoming WebSocket messages to appropriate callbacks or handles control messages.
-func (c *GraphQLSubscriptionClient) handleMessage(msg GraphQLMessage) {
-	log.Printf("[GraphQLClient DEBUG] handleMessage: Processing message: Type=%s, ID=%s", msg.Type, msg.ID)
-	// fmt.Printf("Received WebSocket message: Type=%s, ID=%s\n", msg.Type, msg.ID) // Original Debug log
-	switch msg.Type {
-	case "next", "data": // 'data' for graphql-ws, 'next' for graphql-transport-ws
-		if callback, exists := c.callbacks[msg.ID]; exists {
-			if msg.Payload != nil {
-				log.Printf("[GraphQLClient DEBUG] handleMessage: Invoking callback for ID %s", msg.ID)
+		c.mu.RLock()
+		currentConn := c.conn // Use 'currentConn' for clarity within this iteration
+		c.mu.RUnlock()
+
+		if currentConn == nil {
+			log.Printf("[GraphQLClient] Connection is nil (already closed by client instance). Stopping listener (processed %d messages).", messageCount)
+			// This typically means c.Close() was called and completed.
+			return errors.New("websocket connection unavailable (client connection field is nil)")
+		}
+
+		// Set a read deadline. This is important to prevent ReadJSON from blocking indefinitely,
+		// allowing the loop to regularly check the contexts (ctx.Done, c.internalCtx.Done).
+		// If the server sends keep-alives, they will be read. If not, this timeout ensures liveness checks.
+		// Adjust timeout duration as needed; 5-15 seconds is often reasonable.
+		deadline := time.Now().Add(15 * time.Minute) // Increased from 2s, make this configurable if needed
+		if err := currentConn.SetReadDeadline(deadline); err != nil {
+			log.Printf("[GraphQLClient] Error setting read deadline: %v. Stopping listener.", err)
+			return fmt.Errorf("error setting read deadline: %w", err)
+		}
+
+		err = currentConn.ReadJSON(&msg)
+		// It's good practice to clear the deadline after the read operation.
+		// Ignoring error on clearing deadline as the primary error 'err' from ReadJSON is more important.
+		_ = currentConn.SetReadDeadline(time.Time{})
+
+		if err != nil {
+			// 1. Handle timeout: Check contexts, then continue if no shutdown signal.
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				log.Printf("[GraphQLClient] Read timeout (waited up to %.fs). Checking for shutdown signals...", deadline.Sub(time.Now().Add(-15*time.Second)).Seconds())
+				// Explicitly check contexts again, as the select at the loop start might not have run if ReadJSON blocked for its full duration.
+				select {
+				case <-ctx.Done():
+					log.Printf("[GraphQLClient] Read timeout, but main context is done. Stopping. Error: %v", ctx.Err())
+					return ctx.Err()
+				case <-c.internalCtx.Done():
+					log.Printf("[GraphQLClient] Read timeout, but internal context (client.Close) is done. Stopping. Error: %v", c.internalCtx.Err())
+					return fmt.Errorf("client explicitly closed during timeout: %w", c.internalCtx.Err())
+				default:
+					// Genuine timeout on read. Server might be legitimately quiet.
+					// Connection is not necessarily broken. Continue listening.
+					log.Printf("[GraphQLClient] Read timed out, but no shutdown signal. Will attempt to read again.")
+					continue // Continue to the next iteration of the for loop.
+				}
+			}
+
+			// 2. Handle WebSocket close errors (server or client initiated proper WebSocket closure)
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+				log.Printf("[GraphQLClient] WebSocket closed normally by peer (CloseNormalClosure): %v (processed %d messages)", err, messageCount)
+				return nil // Indicates graceful server-side closure. CallGraphQLAgentFunc will then clean up.
+			}
+			// Check for any other type of WebSocket close error.
+			var wsCloseErr *websocket.CloseError
+			if errors.As(err, &wsCloseErr) {
+				log.Printf("[GraphQLClient] WebSocket closed with specific code %d: %v (processed %d messages)", wsCloseErr.Code, err, messageCount)
+				return fmt.Errorf("websocket closed with code %d: %w", wsCloseErr.Code, err) // Indicate an error closure.
+			}
+			// IsUnexpectedCloseError for abrupt network issues where no proper WS close frame was received.
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNoStatusReceived) {
+				log.Printf("[GraphQLClient] WebSocket unexpected close error (e.g. network issue, server crash): %v (processed %d messages)", err, messageCount)
+				return fmt.Errorf("websocket unexpected close: %w", err)
+			}
+
+			// 3. Re-check c.conn field state, as c.Close() could have been called concurrently
+			// and nulled c.conn while this read operation was failing for a different reason.
+			c.mu.RLock()
+			connStillAssignedInClient := c.conn != nil
+			c.mu.RUnlock()
+			if !connStillAssignedInClient {
+				log.Printf("[GraphQLClient] Connection field became nil during read error processing. Client likely closed. (processed %d messages). Original error: %v", messageCount, err)
+				return errors.New("graphql client connection field is nil (client closed during read error)")
+			}
+
+			// 4. Any other error is likely a persistent issue with the connection.
+			log.Printf("[GraphQLClient] Unhandled persistent read error: %v (processed %d messages)", err, messageCount)
+			return fmt.Errorf("persistent websocket read error: %w", err)
+		}
+
+		// If err is nil, process the message
+		messageCount++
+		log.Printf("[GraphQLClient] Received message #%d: Type=%s, ID=%s", messageCount, msg.Type, msg.ID)
+
+		switch msg.Type {
+		case "next", "data":
+			c.mu.RLock()
+			callback, exists := c.callbacks[msg.ID]
+			c.mu.RUnlock()
+			if exists && callback != nil {
+				log.Printf("[GraphQLClient] Calling callback for subscription ID: %s (message #%d)", msg.ID, messageCount)
 				callback(msg.Payload)
 			} else {
-				log.Printf("[GraphQLClient DEBUG] handleMessage: Received %s message with nil payload for ID %s", msg.Type, msg.ID)
+				log.Printf("[GraphQLClient] No callback found for subscription ID: %s", msg.ID)
 			}
-		} else {
-			log.Printf("[GraphQLClient DEBUG] handleMessage: No callback registered for subscription ID %s", msg.ID)
+		case "error": // GraphQL specific error over WebSocket, not a transport error
+			log.Printf("[GraphQLClient] GraphQL subscription error message received: ID=%s, Payload=%+v", msg.ID, msg.Payload)
+			c.mu.RLock()
+			callback, exists := c.callbacks[msg.ID]
+			c.mu.RUnlock()
+			if exists && callback != nil {
+				callback(map[string]interface{}{ // Adapt to how AgentResponse handles errors
+					"errors": []map[string]interface{}{
+						{"message": fmt.Sprintf("GraphQL subscription error via WebSocket: ID=%s, Payload=%+v", msg.ID, msg.Payload)},
+					},
+				})
+			}
+		case "complete":
+			log.Printf("[GraphQLClient] GraphQL subscription completed for ID: %s", msg.ID)
+			c.mu.Lock()
+			delete(c.callbacks, msg.ID) // This specific subscription is done.
+			c.mu.Unlock()
+			// The connection itself stays open for other active/new subscriptions.
+		case "connection_keep_alive", "ka", "ping": // Common keep-alive types
+			log.Printf("[GraphQLClient] Received keep-alive/ping message type: %s", msg.Type)
+			if msg.Type == "ping" && c.protocol == "graphql-transport-ws" { // graphql-transport-ws expects pong
+				if err := c.sendMessage(GraphQLMessage{Type: "pong", Payload: msg.Payload}); err != nil {
+					log.Printf("[GraphQLClient] Error sending pong: %v", err)
+					// This might be a critical error for the connection if pongs are mandatory.
+					// However, an error sending pong might mean the connection is already bad.
+				} else {
+					log.Printf("[GraphQLClient] Sent pong in response to ping.")
+				}
+			}
+		case "pong": // Received a pong, perhaps in response to a client-sent ping (not implemented here)
+			log.Printf("[GraphQLClient] Received pong message type: %s", msg.Type)
+		default:
+			log.Printf("[GraphQLClient] Unhandled message type: %s. Payload: %+v", msg.Type, msg.Payload)
 		}
-	case "error": // Used by both protocols for subscription-specific errors
-		log.Printf("Subscription error for ID %s: %v", msg.ID, msg.Payload)
-		// Optionally, notify callback or remove subscription
-		delete(c.callbacks, msg.ID) // Stop processing further messages for this sub
-	case "complete": // Used by both protocols
-		log.Printf("Subscription %s completed by server.", msg.ID)
-		delete(c.callbacks, msg.ID) // Clean up callback
-	case "ping": // graphql-transport-ws
-		// Respond with pong
-		if err := c.sendMessage(GraphQLMessage{Type: "pong"}); err != nil {
-			log.Printf("Error sending pong: %v", err)
-		}
-	case "pong": // graphql-transport-ws, response to our ping (if we were to send one)
-		// Usually, client does not send pings, but handles server pings.
-		log.Println("Received pong from server.")
-	case "ka": // graphql-ws (Keep Alive)
-		log.Println("Received keep-alive from server.")
-	default:
-		log.Printf("Unknown WebSocket message type received: %s", msg.Type)
 	}
 }
 
-// GraphQLMessage defines the generic structure for messages exchanged over WebSocket.
-type GraphQLMessage struct {
-	ID      string      `json:"id,omitempty"`
-	Type    string      `json:"type"`
-	Payload interface{} `json:"payload,omitempty"`
-}
+//func main() {
 
-// SubscriptionPayload defines the payload for a subscription request.
-type SubscriptionPayload struct {
-	Query     string                 `json:"query"`
-	Variables map[string]interface{} `json:"variables,omitempty"`
-	// OperationName string      `json:"operationName,omitempty"` // Optional
-}
-
-// Note: The main.Message struct (used in CallGraphQLAgentFunc parameter) is defined in model.go:
-// type Message struct {
-// Role    string `json:"role"`
-// Content string `json:"content"`
-// Format  string `json:"format"`
-// TurnID  string `json:"turnId"`
-// }
-// This is compatible with what CallGraphQLAgentFunc expects for its `messages` parameter.
-// The internal MessageInput and MessageOutput in this file are for GraphQL-specific structures.
+//var GraphQLAgentAPIURL = "ws://localhost:8080/subscriptions"
+//	messageChan := make(chan string, 500) // Buffer size as appropriate
+//	errorChan := make(chan error, 50)     // Buffer size as appropriate
+//
+//	// Create a context that can be cancelled on application shutdown (e.g., by OS signal)
+//	appCtx, appShutdownSignal := context.WithCancel(context.Background())
+//	// Ensure appShutdownSignal() is called to clean up all long-running goroutines when main exits.
+//	// One way is to defer it, another is to call it explicitly before main returns.
+//	// defer appShutdownSignal() // Call this if main might exit for reasons other than signals
+//
+//	log.Println("[Main] Starting GraphQL agent function in a goroutine...")
+//
+//	// Use a WaitGroup if you want main to wait for CallGraphQLAgentFunc to finish before exiting completely
+//	var wg sync.WaitGroup
+//	wg.Add(1)
+//	go func() {
+//		defer wg.Done()
+//		// Pass appCtx to CallGraphQLAgentFunc for its operational lifetime
+//		CallGraphQLAgentFunc(
+//			appCtx,
+//			"your-api-key",
+//			"conversation-123",
+//			"user-456",
+//			"tenant-789",
+//			"channel-001",
+//			[]Message{ // Sample messages
+//				{Content: "Hello, how can I help you?", Format: "text", Role: "user", TurnID: "turn-1"},
+//				{Content: "Please provide information about your services.", Format: "text", Role: "user", TurnID: "turn-2"},
+//			},
+//			GraphQLAgentAPIURL,
+//			messageChan,
+//			errorChan,
+//		)
+//		log.Println("[Main] CallGraphQLAgentFunc goroutine has finished.")
+//		// Since CallGraphQLAgentFunc might be the producer for messageChan and errorChan indirectly
+//		// via ResponseProcessor, and ResponseProcessor stops on context cancellation,
+//		// these channels will stop receiving new items. Consider if they need explicit closing.
+//		// For this example, we'll rely on them draining or GC.
+//	}()
+//
+//	log.Println("[Main] Indefinitely processing messages and errors. Press Ctrl+C to shutdown.")
+//	messageCount := 0
+//	errorCount := 0
+//	keepRunning := true
+//
+//	// Setup signal handling for graceful shutdown
+//	osSignalChan := make(chan os.Signal, 1)
+//	signal.Notify(osSignalChan, syscall.SIGINT, syscall.SIGTERM)
+//
+//	for keepRunning {
+//		select {
+//		case msg, ok := <-messageChan:
+//			if !ok {
+//				log.Printf("[Main] Message channel closed. Total messages received: %d", messageCount)
+//				// If messageChan closes, it might mean the producer (CallGraphQLAgentFunc) has exited.
+//				// You might want to trigger a shutdown or just stop this part of the loop.
+//				messageChan = nil // Disable this case
+//				if errorChan == nil {
+//					keepRunning = false
+//				} // Exit if both channels are done
+//				break
+//			}
+//			messageCount++
+//			log.Printf("[Main] Received message #%d: %.100s...", messageCount, msg)
+//			// Process the message here
+//
+//		case err, ok := <-errorChan:
+//			if !ok {
+//				log.Printf("[Main] Error channel closed. Total errors received: %d", errorCount)
+//				errorChan = nil // Disable this case
+//				if messageChan == nil {
+//					keepRunning = false
+//				} // Exit if both channels are done
+//				break
+//			}
+//			errorCount++
+//			log.Printf("[Main] Received error #%d: %v", errorCount, err)
+//			// Handle the error. Depending on the error, you might decide to shut down the application.
+//			// For example, if it's a critical, unrecoverable error from CallGraphQLAgentFunc.
+//			// if isFatal(err) { appShutdownSignal() }
+//
+//		case s := <-osSignalChan:
+//			log.Printf("[Main] Received OS signal %v. Initiating graceful shutdown...", s)
+//			appShutdownSignal() // Signal all components using appCtx to stop
+//			// keepRunning will eventually become false as appCtx.Done() is processed by CallGraphQLAgentFunc
+//			// and channels might close. Or set keepRunning = false directly.
+//			// For a more deterministic shutdown, you can have a timeout here.
+//
+//		case <-appCtx.Done(): // If appCtx is cancelled (e.g., by the signal handler above)
+//			log.Println("[Main] Application context is done. Exiting message processing loop.")
+//			keepRunning = false // This will break the loop.
+//		}
+//	}
+//
+//	log.Println("[Main] Waiting for CallGraphQLAgentFunc to complete shutdown...")
+//	wg.Wait() // Wait for the agent goroutine to finish its cleanup
+//
+//	log.Printf("[Main] Finished all processing. Final stats - Messages: %d, Errors: %d", messageCount, errorCount)
+//	log.Println("[Main] Application exiting.")
+//}

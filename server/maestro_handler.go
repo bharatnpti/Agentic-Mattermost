@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"strconv"
@@ -15,10 +16,10 @@ type MaestroHandler struct {
 	API                  plugin.API
 	BotUserID            string
 	GetConfig            func() *configuration
-	CallGraphQLAgentFunc func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string) (string, error)
+	CallGraphQLAgentFunc func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, messageChan chan<- string, errorChan chan<- error)
 }
 
-func NewMaestroHandler(api plugin.API, botUserID string, getConfig func() *configuration, callGraphQLAgentFunc func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string) (string, error)) *MaestroHandler {
+func NewMaestroHandler(api plugin.API, botUserID string, getConfig func() *configuration, callGraphQLAgentFunc func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, messageChan chan<- string, errorChan chan<- error)) *MaestroHandler {
 	return &MaestroHandler{
 		API:                  api,
 		BotUserID:            botUserID,
@@ -178,74 +179,90 @@ func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, ch
 	h.API.LogDebug("DEBUG: processMaestroTask: WebSocket URL is configured", "url", webSocketURL)
 
 	h.API.LogInfo("agent url is ", "webSocketURL", webSocketURL)
-	messages, err := h.CallGraphQLAgentFunc("apiKey", graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, fetchedMessages, webSocketURL)
-	if err != nil {
-		h.API.LogDebug("DEBUG: processMaestroTask returning error after CallGraphQLAgentFunc failed", "error", err.Error())
-		h.API.LogError("Error calling GraphQL Agent for !maestro task", "error", err.Error(), "user_id", userID, "task_name", taskName, "webSocketURL", webSocketURL)
-		errorPost := &model.Post{
-			ChannelId: channelID,
-			Message:   "An error occurred while contacting the agent. Please try again later or contact an administrator.",
-			RootId:    threadRootID,
-			UserId:    h.BotUserID,
-		}
-		_, createErr := h.API.CreatePost(errorPost)
-		if createErr != nil {
-			h.API.LogError("Failed to create error post", "error", createErr.Error())
-		}
-		return err
-	}
-	h.API.LogDebug("DEBUG: processMaestroTask: CallGraphQLAgentFunc succeeded", "responseMessage", messages)
 
-	h.API.LogInfo("Response received from GraphQL agent", "messageContent", messages)
+	// Create channels for continuous message processing
+	messageChan := make(chan string, 10) // Buffered channel for messages
+	errorChan := make(chan error, 5)     // Buffered channel for errors
 
-	if len(messages) == 0 {
-		h.API.LogInfo("GraphQL Agent returned no messages for !maestro task", "user_id", userID, "task_name", taskName)
-		noMessagesPost := &model.Post{
-			ChannelId: channelID,
-			Message:   "The agent processed your request but returned no messages.",
-			RootId:    threadRootID,
-			UserId:    h.BotUserID,
-		}
-		_, createErr := h.API.CreatePost(noMessagesPost)
-		if createErr != nil {
-			h.API.LogDebug("DEBUG: processMaestroTask returning error after CreatePost (for no messages) failed", "error", createErr.Error())
-			h.API.LogError("Failed to create no messages post", "error", createErr.Error())
-		}
-		// Ensure this path returns the error if createErr is not nil, or nil if it is.
-		// The original code was just logging and returning nil.
-		// This might be a bug if createErr should be propagated.
-		// For now, replicating original behavior of returning nil after logging.
-		// To be safe, let's assume if createErr happened, it's an error for processMaestroTask
-		if createErr != nil {
-			return fmt.Errorf("failed to create 'no messages' post: %w", createErr)
-		}
-		h.API.LogDebug("DEBUG: processMaestroTask: Agent returned no messages, created confirmation post.")
-		return nil
-	}
-	h.API.LogDebug("DEBUG: processMaestroTask: Agent returned messages, proceeding to create response post.")
+	appCtx, _ := context.WithCancel(context.Background())
 
-	message := messages
+	// Start the GraphQL agent function in a goroutine
+	go h.CallGraphQLAgentFunc(appCtx, "apiKey", graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, fetchedMessages, webSocketURL, messageChan, errorChan)
 
-	responsePost := &model.Post{
-		ChannelId: channelID,
-		Message:   message,
-		RootId:    threadRootID,
-		UserId:    h.BotUserID,
-	}
+	// Process messages continuously
+	go h.processIncomingMessages(messageChan, errorChan, channelID, threadRootID, userID, taskName)
 
-	_, createErr := h.API.CreatePost(responsePost)
-	if createErr != nil {
-		h.API.LogDebug("DEBUG: processMaestroTask returning error after final CreatePost (responsePost) failed", "error", createErr.Error())
-		h.API.LogError("Failed to create response post", "error", createErr.Error())
-		h.API.SendEphemeralPost(userID, &model.Post{
-			ChannelId: channelID,
-			Message:   "I processed your request but couldn't post the response. Here it is privately: " + message,
-			RootId:    rootID,
-		})
-		return fmt.Errorf("failed to create response post: %w", createErr)
-	}
-	h.API.LogDebug("DEBUG: processMaestroTask completed successfully.")
 	return nil
+}
+
+// processIncomingMessages handles continuous message processing from GraphQL agent
+func (h *MaestroHandler) processIncomingMessages(messageChan <-chan string, errorChan <-chan error, channelID, threadRootID, userID, taskName string) {
+	h.API.LogInfo("Starting continuous message processing", "channelID", channelID, "userID", userID)
+
+	for {
+		select {
+		case message, ok := <-messageChan:
+			if !ok {
+				h.API.LogInfo("Message channel closed, stopping message processing", "channelID", channelID, "userID", userID)
+				return
+			}
+
+			if message == "" {
+				h.API.LogDebug("Received empty message, skipping", "channelID", channelID)
+				continue
+			}
+
+			h.API.LogInfo("Received message from GraphQL agent", "messageContent", message, "channelID", channelID)
+
+			// Create a post for each message received
+			responsePost := &model.Post{
+				ChannelId: channelID,
+				Message:   message,
+				RootId:    threadRootID,
+				UserId:    h.BotUserID,
+			}
+
+			_, createErr := h.API.CreatePost(responsePost)
+			if createErr != nil {
+				h.API.LogError("Failed to create response post", "error", createErr.Error(), "channelID", channelID)
+				// Try to send as ephemeral message if regular post fails
+				h.API.SendEphemeralPost(userID, &model.Post{
+					ChannelId: channelID,
+					Message:   "I processed your request but couldn't post the response. Here it is privately: " + message,
+					RootId:    threadRootID,
+				})
+			} else {
+				h.API.LogInfo("Successfully posted message to channel", "channelID", channelID, "messageLength", len(message))
+			}
+
+		case err, ok := <-errorChan:
+			if !ok {
+				h.API.LogInfo("Error channel closed, stopping message processing", "channelID", channelID, "userID", userID)
+				return
+			}
+
+			h.API.LogError("Error from GraphQL Agent", "error", err.Error(), "user_id", userID, "task_name", taskName)
+
+			// Post error message to channel
+			//errorPost := &model.Post{
+			//	ChannelId: channelID,
+			//	Message:   "An error occurred while processing your request: " + err.Error(),
+			//	RootId:    threadRootID,
+			//	UserId:    h.BotUserID,
+			//}
+
+			//_, createErr := h.API.CreatePost(errorPost)
+			//if createErr != nil {
+			//h.API.LogError("Failed to create error post", "error", createErr.Error())
+			// Send as ephemeral if regular post fails
+			h.API.SendEphemeralPost(userID, &model.Post{
+				ChannelId: channelID,
+				Message:   "An error occurred: " + err.Error(),
+				RootId:    threadRootID,
+			})
+			//}
+		}
+	}
 }
 
 func (h *MaestroHandler) buildMessages(posts *model.PostList) []Message {
@@ -261,57 +278,6 @@ func (h *MaestroHandler) buildMessages(posts *model.PostList) []Message {
 			content = fmt.Sprintf("%s: %s", post.UserId, post.Message)
 		}
 
-		// Assuming Message struct has Role and Content fields.
-		// Format and TurnID might need to be handled based on the new Message struct definition.
-		// If Message struct has Format and TurnID, they need to be set here.
-		// For now, let's assume Message struct is {Role string, Content string}
-		// and adapt if it includes Format and TurnID from the previous location.
-		// The moved Message struct is:
-		// type Message struct {
-		//  Role    string `json:"role"`
-		//  Content string `json:"content"`
-		// }
-		// So, Format and TurnID are not part of it. If CallGraphQLAgentFunc expects them,
-		// this Message struct or the call signature needs adjustment.
-		// The CallGraphQLAgentFunc signature in maestro_handler.go is:
-		// CallGraphQLAgentFunc func(apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string) (string, error)
-		// And the Message struct it uses (from model.go) is {Role, Content}.
-		// However, the original buildMessages in plugin.go created a Message struct with Format and TurnID.
-		// This implies the CallGraphQLAgentFunc in openai.go *does* expect Format and TurnID.
-		// Let's check the definition of Message in openai.go (which was moved to model.go)
-		// The original definition in openai.go (now in model.go) was:
-		// type Message struct {
-		// 	Role    string `json:"role"`
-		// 	Content string `json:"content"`
-		// }
-		// This is a conflict. The `buildMessages` was creating a `main.Message` that had `Format` and `TurnID`
-		// but the `CallGraphQLAgentFunc` in `openai.go` takes `[]main.Message` which *does not* have these fields.
-		// The `CallGraphQLAgentFunc` in `openai.go` *internally* constructs `MessageInput` which has these.
-
-		// Let's re-check `CallGraphQLAgentFunc` in `openai.go`.
-		// It takes `messages []Message`. This `Message` is `main.Message` from `model.go`.
-		// Inside `CallGraphQLAgentFunc`, it iterates `messages` and creates `messageBlock` for the GraphQL query.
-		// The query formatting part:
-		// buffer.WriteString(fmt.Sprintf(`{
-		// content: "%s",
-		// format: "%s",  <-- where does this come from?
-		// role: "%s",
-		// turnId: "%s" <-- and this?
-		// }`, escapeString(msg.Content), escapeString(msg.Format), escapeString(msg.Role), escapeString(msg.TurnID)))
-		// This means the `Message` struct passed to `CallGraphQLAgentFunc` *must* have Format and TurnID.
-
-		// So, the `Message` struct in `server/model.go` needs to be updated.
-		// Let's assume it will be updated. For now, this function will create messages
-		// with those fields.
-
-		// Corrected part:
-		// The `Message` struct in `model.go` is fine. The issue is that `buildMessages`
-		// was creating fields `Format` and `TurnID` that were not part of the `Message` struct in `model.go`.
-		// The `CallGraphQLAgentFunc` in `openai.go` (which is now passed to the handler)
-		// takes `[]Message` (from `model.go`) and *itself* adds `Format: "text"` and generates `TurnID`
-		// when constructing the GraphQL query string.
-		// The Message struct in model.go now has Format and TurnID.
-		// Populate them here.
 		rand.Seed(time.Now().UnixNano()) // Seed random number generator
 
 		message := Message{
@@ -329,17 +295,6 @@ func (h *MaestroHandler) buildMessages(posts *model.PostList) []Message {
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
-
-	// Ensure we only return up to numMessages (this was missing in the original processMaestroTask)
-	// Actually, numMessages is used by GetPostsForChannel, but the post-processing of `buildMessages`
-	// might result in more or less, depending on filtering.
-	// The `processMaestroTask` fetches `numMessages+10` posts. `buildMessages` converts all of them.
-	// The `CallGraphQLAgentFunc` then takes all `fetchedMessages`.
-	// The number of messages sent to the agent is effectively controlled by what `buildMessages` returns.
-	// If a specific number of messages (e.g. `numMessages` from the command) is strictly required
-	// for the agent call, then `buildMessages` should be trimmed or `processMaestroTask` should
-	// slice `fetchedMessages` before passing to `CallGraphQLAgentFunc`.
-	// For now, behavior is consistent with original: all fetched and processed posts are sent.
 
 	return messages
 }
