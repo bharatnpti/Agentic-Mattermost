@@ -4,22 +4,20 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
-	"github.com/mattermost/mattermost/server/public/plugin"
 )
 
-// ServeHTTP demonstrates a plugin that handles HTTP requests by greeting the world.
-// The root URL is currently <siteUrl>/plugins/com.mattermost.plugin-starter-template/api/v1/. Replace com.mattermost.plugin-starter-template with the plugin ID.
-func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
-	router := mux.NewRouter()
+// initializeRouter sets up the HTTP router for the plugin.
+func (p *Plugin) initializeRouter() {
+	p.router = mux.NewRouter()
 
 	// Middleware to require that the user is logged in
-	router.Use(p.MattermostAuthorizationRequired)
+	p.router.Use(p.MattermostAuthorizationRequired)
 
-	apiRouter := router.PathPrefix("/api/v1").Subrouter()
+	apiRouter := p.router.PathPrefix("/api/v1").Subrouter()
 
 	apiRouter.HandleFunc("/hello", p.HelloWorld).Methods(http.MethodGet)
 
-	router.ServeHTTP(w, r)
+	// Note: The actual serving of HTTP requests is done by the ServeHTTP method in plugin.go
 }
 
 func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler {
