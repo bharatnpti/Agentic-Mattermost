@@ -16,6 +16,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	// writeWait is the time allowed to write a message to the peer.
+	writeWait = 10 * time.Second
+)
+
 // AgentRequestInput defines the structure for the 'request' input object in the GraphQL query.
 type AgentRequestInput struct {
 	ConversationContext ConversationContextInput `json:"conversationContext"`
@@ -216,7 +221,7 @@ func escapeString(input string) string {
 
 // CallGraphQLAgentFunc connects to a GraphQL subscription endpoint and continuously processes multiple AgentResponse objects.
 // Enhanced to better handle multiple responses from the GraphQL server.
-var CallGraphQLAgentFunc = func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, messageChan chan<- string, errorChan chan<- error) {
+var CallGraphQLAgentFunc = func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, pingInterval time.Duration, messageChan chan<- string, errorChan chan<- error) {
 	// This context is for this specific agent call + subscription lifecycle.
 	// It will be cancelled if parentCtx is cancelled or if cancel() is called explicitly.
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -224,7 +229,7 @@ var CallGraphQLAgentFunc = func(parentCtx context.Context, apiKey string, conver
 
 	processor := NewResponseProcessor(ctx, messageChan, errorChan)
 
-	client := NewGraphQLSubscriptionClient(apiURL)
+	client := NewGraphQLSubscriptionClient(apiURL, pingInterval)
 	// defer client.Close() is crucial. It's called when CallGraphQLAgentFunc exits.
 	// This happens if:
 	// 1. parentCtx is cancelled (and thus ctx is cancelled).
@@ -411,10 +416,11 @@ type GraphQLSubscriptionClient struct {
 	internalCancel context.CancelFunc
 	listenDone     chan struct{}
 	mu             sync.RWMutex // Added mutex for thread safety
+	pingInterval   time.Duration
 }
 
 // NewGraphQLSubscriptionClient creates a new client for GraphQL subscriptions.
-func NewGraphQLSubscriptionClient(wsURL string) *GraphQLSubscriptionClient {
+func NewGraphQLSubscriptionClient(wsURL string, pingInterval time.Duration) *GraphQLSubscriptionClient {
 	iCtx, iCancel := context.WithCancel(context.Background())
 	return &GraphQLSubscriptionClient{
 		url:            wsURL,
@@ -422,6 +428,7 @@ func NewGraphQLSubscriptionClient(wsURL string) *GraphQLSubscriptionClient {
 		internalCtx:    iCtx,
 		internalCancel: iCancel,
 		listenDone:     make(chan struct{}),
+		pingInterval:   pingInterval,
 	}
 }
 
@@ -477,6 +484,15 @@ func (c *GraphQLSubscriptionClient) Connect(ctx context.Context) error {
 	}
 
 	log.Printf("[GraphQLClient] Connection established and acknowledged")
+
+	// Set custom pong handler
+	c.conn.SetPongHandler(func(appData string) error {
+		log.Printf("[GraphQLClient] Received pong from server. AppData: %s", appData)
+		// The gorilla/websocket library automatically updates the read deadline on pong.
+		// No need to manually call c.conn.SetReadDeadline here unless custom logic is required.
+		return nil
+	})
+
 	return nil
 }
 
@@ -550,6 +566,15 @@ func (c *GraphQLSubscriptionClient) Listen(ctx context.Context) error {
 	defer close(c.listenDone) // Signal that Listen has finished its execution.
 	log.Printf("[GraphQLClient] Starting to listen for messages. Will continue until context is done, client is closed, or a fatal websocket error occurs.")
 
+	ticker := time.NewTicker(c.pingInterval)
+	defer ticker.Stop()
+
+	// readWait should be longer than pingInterval.
+	// It's the maximum time to wait for a message (including pongs which are handled by the library)
+	// before the connection is considered stale.
+	// Adding a buffer (e.g., 45 seconds) to the ping interval.
+	localReadWait := c.pingInterval + 45*time.Second
+
 	messageCount := 0
 
 	for {
@@ -564,6 +589,22 @@ func (c *GraphQLSubscriptionClient) Listen(ctx context.Context) error {
 		case <-c.internalCtx.Done(): // c.internalCtx is cancelled by c.Close()
 			log.Printf("[GraphQLClient] Internal context done (client.Close() called), stopping listener (processed %d messages). Error: %v", messageCount, c.internalCtx.Err())
 			return fmt.Errorf("client explicitly closed: %w", c.internalCtx.Err())
+		case <-ticker.C:
+			c.mu.RLock()
+			conn := c.conn
+			c.mu.RUnlock()
+			if conn == nil {
+				log.Printf("[GraphQLClient] Ping: Connection is nil, skipping ping.")
+				// If conn is nil, the main read loop will likely handle shutdown soon.
+				continue
+			}
+			if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(writeWait)); err != nil {
+				log.Printf("[GraphQLClient] Error sending ping: %v", err)
+				// Depending on policy, we might not want to return error immediately.
+				// The read loop will likely detect a dead connection.
+			} else {
+				log.Printf("[GraphQLClient] Ping sent successfully.")
+			}
 		default:
 			// No immediate stop signal, proceed to attempt a read.
 		}
@@ -581,8 +622,8 @@ func (c *GraphQLSubscriptionClient) Listen(ctx context.Context) error {
 		// Set a read deadline. This is important to prevent ReadJSON from blocking indefinitely,
 		// allowing the loop to regularly check the contexts (ctx.Done, c.internalCtx.Done).
 		// If the server sends keep-alives, they will be read. If not, this timeout ensures liveness checks.
-		// Adjust timeout duration as needed; 5-15 seconds is often reasonable.
-		deadline := time.Now().Add(15 * time.Minute) // Increased from 2s, make this configurable if needed
+		// The localReadWait duration should be longer than the ping interval.
+		deadline := time.Now().Add(localReadWait)
 		if err := currentConn.SetReadDeadline(deadline); err != nil {
 			log.Printf("[GraphQLClient] Error setting read deadline: %v. Stopping listener.", err)
 			return fmt.Errorf("error setting read deadline: %w", err)
@@ -596,7 +637,7 @@ func (c *GraphQLSubscriptionClient) Listen(ctx context.Context) error {
 		if err != nil {
 			// 1. Handle timeout: Check contexts, then continue if no shutdown signal.
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				log.Printf("[GraphQLClient] Read timeout (waited up to %.fs). Checking for shutdown signals...", deadline.Sub(time.Now().Add(-15*time.Second)).Seconds())
+				log.Printf("[GraphQLClient] Read timeout (waited up to %s). Checking for shutdown signals...", localReadWait.String())
 				// Explicitly check contexts again, as the select at the loop start might not have run if ReadJSON blocked for its full duration.
 				select {
 				case <-ctx.Done():

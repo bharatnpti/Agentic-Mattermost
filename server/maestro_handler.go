@@ -16,10 +16,10 @@ type MaestroHandler struct {
 	API                  plugin.API
 	BotUserID            string
 	GetConfig            func() *configuration
-	CallGraphQLAgentFunc func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, messageChan chan<- string, errorChan chan<- error)
+	CallGraphQLAgentFunc func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, pingInterval time.Duration, messageChan chan<- string, errorChan chan<- error)
 }
 
-func NewMaestroHandler(api plugin.API, botUserID string, getConfig func() *configuration, callGraphQLAgentFunc func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, messageChan chan<- string, errorChan chan<- error)) *MaestroHandler {
+func NewMaestroHandler(api plugin.API, botUserID string, getConfig func() *configuration, callGraphQLAgentFunc func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, pingInterval time.Duration, messageChan chan<- string, errorChan chan<- error)) *MaestroHandler {
 	return &MaestroHandler{
 		API:                  api,
 		BotUserID:            botUserID,
@@ -160,6 +160,9 @@ func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, ch
 
 	config := h.GetConfig()
 	webSocketURL := config.GraphQLAgentWebSocketURL
+	// Assuming GraphQLPingIntervalSeconds is guaranteed to be non-nil due to defaulting in configuration.go
+	pingIntervalSeconds := *config.GraphQLPingIntervalSeconds
+	pingIntervalDuration := time.Duration(pingIntervalSeconds) * time.Second
 
 	if webSocketURL == "" {
 		h.API.LogDebug("DEBUG: processMaestroTask returning error because webSocketURL is empty")
@@ -187,7 +190,7 @@ func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, ch
 	appCtx, _ := context.WithCancel(context.Background())
 
 	// Start the GraphQL agent function in a goroutine
-	go h.CallGraphQLAgentFunc(appCtx, "apiKey", graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, fetchedMessages, webSocketURL, messageChan, errorChan)
+	go h.CallGraphQLAgentFunc(appCtx, "apiKey", graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, fetchedMessages, webSocketURL, pingIntervalDuration, messageChan, errorChan)
 
 	// Process messages continuously
 	go h.processIncomingMessages(messageChan, errorChan, channelID, threadRootID, userID, taskName)

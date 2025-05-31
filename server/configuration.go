@@ -20,6 +20,7 @@ import (
 type configuration struct {
 	OpenAIAPIKey             string
 	GraphQLAgentWebSocketURL string // New field
+	GraphQLPingIntervalSeconds *int `json:"GraphQLPingIntervalSeconds"`
 }
 
 // Clone shallow copies the configuration. Your implementation may require a deep copy if
@@ -77,6 +78,13 @@ func (p *Plugin) OnConfigurationChange() error {
 	// Load the public configuration fields from the Mattermost server configuration.
 	if err := p.API.LoadPluginConfiguration(configuration); err != nil {
 		return errors.Wrap(err, "failed to load plugin configuration")
+	}
+
+	// Provide default for GraphQLPingIntervalSeconds if not set or invalid
+	defaultPingInterval := 30 // Default to 30 seconds
+	if configuration.GraphQLPingIntervalSeconds == nil || *configuration.GraphQLPingIntervalSeconds <= 0 {
+		configuration.GraphQLPingIntervalSeconds = &defaultPingInterval
+		p.API.LogInfo("GraphQLPingIntervalSeconds not configured or invalid, defaulting to 30 seconds.")
 	}
 
 	p.setConfiguration(configuration)
