@@ -572,8 +572,14 @@ func (c *GraphQLSubscriptionClient) Listen(ctx context.Context) error {
 	// readWait should be longer than pingInterval.
 	// It's the maximum time to wait for a message (including pongs which are handled by the library)
 	// before the connection is considered stale.
-	// Adding a buffer (e.g., 45 seconds) to the ping interval.
-	localReadWait := c.pingInterval + 45*time.Second
+	// Set to 2x ping interval, with a minimum.
+	localReadWait := c.pingInterval * 2
+	minReadWait := 2 * time.Second // Minimum time for a read attempt, ensures ticker gets serviced.
+	if localReadWait < minReadWait {
+		localReadWait = minReadWait
+	}
+	log.Printf("[GraphQLClient] Effective read wait for connection: %s (ping interval: %s)", localReadWait.String(), c.pingInterval.String())
+
 
 	messageCount := 0
 
