@@ -127,7 +127,12 @@ func TestOnConfigurationChange(t *testing.T) {
 		api.On("LoadPluginConfiguration", mock.AnythingOfType("*main.configuration")).Run(func(args mock.Arguments) {
 			cfgPtr := args.Get(0).(*configuration)
 			*cfgPtr = *expectedCfg
+			// Note: GraphQLPingIntervalSeconds is deliberately NOT set in expectedCfg
+			// to simulate it being missing from the loaded configuration, thereby triggering the default.
 		}).Return(nil).Once()
+
+		// Expect LogInfo to be called because GraphQLPingIntervalSeconds is missing
+		api.On("LogInfo", "GraphQLPingIntervalSeconds not configured or invalid, defaulting to 30 seconds.").Return().Once()
 
 		err := p.OnConfigurationChange()
 		assert.NoError(t, err)
@@ -135,6 +140,14 @@ func TestOnConfigurationChange(t *testing.T) {
 		retrievedCfg := p.getConfiguration()
 		assert.Equal(t, expectedCfg.OpenAIAPIKey, retrievedCfg.OpenAIAPIKey)
 		assert.Equal(t, expectedCfg.GraphQLAgentWebSocketURL, retrievedCfg.GraphQLAgentWebSocketURL)
+
+		// Assert that the default value for GraphQLPingIntervalSeconds was applied
+		expectedDefaultPingInterval := 30
+		assert.NotNil(t, retrievedCfg.GraphQLPingIntervalSeconds, "GraphQLPingIntervalSeconds should have been defaulted")
+		if retrievedCfg.GraphQLPingIntervalSeconds != nil {
+			assert.Equal(t, expectedDefaultPingInterval, *retrievedCfg.GraphQLPingIntervalSeconds, "GraphQLPingIntervalSeconds should be set to the default value")
+		}
+
 		api.AssertExpectations(t)
 	})
 
