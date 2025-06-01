@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -430,8 +431,40 @@ func TestGraphQLClient_ServerGracefulCloseAfterIdle(t *testing.T) {
 
 		// 2. Server remains idle while client sends pings
 		log.Printf("mockServer: entering idle period for %s...", serverIdlePeriod)
-		time.Sleep(serverIdlePeriod)
-		log.Printf("mockServer: idle period finished. Pings received so far: %d", server.receivedPingCount)
+
+		// Start a goroutine to keep reading from the connection, which allows ping processing.
+		// The main test handler goroutine will wait for serverIdlePeriod using a timer.
+		server.wg.Add(1)
+		go func() {
+			defer server.wg.Done()
+			// Set a read deadline slightly longer than the idle period to ensure this goroutine exits.
+			conn.SetReadDeadline(time.Now().Add(serverIdlePeriod + 1*time.Second))
+			log.Printf("mockServer(idleRead): goroutine started to process incoming messages/pings during idle time.")
+			for {
+				// Attempt to read messages. This is necessary for the underlying WebSocket
+				// connection to process control frames like pings and call the PingHandler.
+				if _, _, err := conn.ReadMessage(); err != nil {
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+						log.Printf("mockServer(idleRead): ReadMessage timed out as expected after idle period.")
+					} else if errors.Is(err, net.ErrClosed) || strings.Contains(err.Error(), "use of closed network connection") {
+						log.Printf("mockServer(idleRead): Connection closed while reading during idle: %v", err)
+					} else {
+						log.Printf("mockServer(idleRead): Error reading during idle: %v", err)
+					}
+					break // Exit loop on any error or timeout
+				}
+				// We don't expect actual messages, just pings to be handled by PingHandler.
+				log.Printf("mockServer(idleRead): Unexpected message received during idle loop.")
+			}
+			log.Printf("mockServer(idleRead): goroutine finished.")
+		}()
+
+		// Wait for the idle period to pass in the main handler goroutine
+		idleWaitTimer := time.NewTimer(serverIdlePeriod)
+		<-idleWaitTimer.C
+
+		log.Printf("mockServer: idle period finished. Pings received by handler: %d", server.receivedPingCount)
+		server.wg.Wait() // Ensure the reading goroutine has completed.
 
 		// 3. Graceful server close
 		log.Printf("mockServer: sending CloseNormalClosure to client for subID: %s", subID)
@@ -439,6 +472,7 @@ func TestGraphQLClient_ServerGracefulCloseAfterIdle(t *testing.T) {
 		if err != nil {
 			log.Printf("mockServer: error sending close message: %v", err)
 		}
+		time.Sleep(50 * time.Millisecond) // Give client a moment to process server's close
 	}
 
 	mockServer := newMockWebsocketServer(t, idleCloseTestHandler)
@@ -574,9 +608,34 @@ func TestGraphQLClient_PingPongKeepAliveAndGracefulClose(t *testing.T) {
 		require.NoError(t, err, "mockServer: failed to send initial data message")
 		log.Printf("mockServer: sent initial data message for subID: %s", subID)
 
-		// 2. Wait for client to send pings
+		// 2. Wait for client to send pings. Start a goroutine to service reads for pings.
 		log.Printf("mockServer: waiting for %s to observe client pings...", serverWaitToObservePings)
-		time.Sleep(serverWaitToObservePings)
+
+		server.wg.Add(1)
+		go func() {
+			defer server.wg.Done()
+			conn.SetReadDeadline(time.Now().Add(serverWaitToObservePings + 1*time.Second))
+			log.Printf("mockServer(pingRead): goroutine started to process pings.")
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+						log.Printf("mockServer(pingRead): ReadMessage timed out.")
+					} else if errors.Is(err, net.ErrClosed) || strings.Contains(err.Error(), "use of closed network connection") {
+						log.Printf("mockServer(pingRead): Connection closed.")
+					} else {
+						log.Printf("mockServer(pingRead): Error reading: %v", err)
+					}
+					break
+				}
+				log.Printf("mockServer(pingRead): Unexpected message received.")
+			}
+			log.Printf("mockServer(pingRead): goroutine finished.")
+		}()
+
+		pingWaitTimer := time.NewTimer(serverWaitToObservePings)
+		<-pingWaitTimer.C
+		log.Printf("mockServer: ping observation period finished. Pings received: %d", server.receivedPingCount)
+		server.wg.Wait() // Ensure reader goroutine finishes
 
 		// 3. Send another message to confirm connection is still alive
 		finalPayload := AgentResponse{Data: AgentData{Agent: AgentDetails{
@@ -593,6 +652,7 @@ func TestGraphQLClient_PingPongKeepAliveAndGracefulClose(t *testing.T) {
 		if err != nil {
 			log.Printf("mockServer: error sending close message: %v", err)
 		}
+		time.Sleep(50 * time.Millisecond) // Give client a moment to process server's close
 	}
 
 	mockServer := newMockWebsocketServer(t, pingTestHandler)

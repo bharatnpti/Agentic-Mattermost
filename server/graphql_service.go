@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/url"
+	"runtime" // Added for runtime.Stack
 	"strings"
 	"sync"
 	"time"
@@ -222,19 +223,12 @@ func escapeString(input string) string {
 // CallGraphQLAgentFunc connects to a GraphQL subscription endpoint and continuously processes multiple AgentResponse objects.
 // Enhanced to better handle multiple responses from the GraphQL server.
 var CallGraphQLAgentFunc = func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, pingInterval time.Duration, messageChan chan<- string, errorChan chan<- error) {
-	// This context is for this specific agent call + subscription lifecycle.
-	// It will be cancelled if parentCtx is cancelled or if cancel() is called explicitly.
 	ctx, cancel := context.WithCancel(parentCtx)
-	defer cancel() // Ensures that if parentCtx isn't done, this specific operation's context is cleaned up on exit.
+	defer cancel()
 
 	processor := NewResponseProcessor(ctx, messageChan, errorChan)
-
 	client := NewGraphQLSubscriptionClient(apiURL, pingInterval)
-	// defer client.Close() is crucial. It's called when CallGraphQLAgentFunc exits.
-	// This happens if:
-	// 1. parentCtx is cancelled (and thus ctx is cancelled).
-	// 2. Connect or Subscribe fails.
-	// 3. client.Listen(ctx) returns (due to server close, fatal error, or its ctx being done).
+
 	defer func() {
 		log.Printf("[CallGraphQLAgentFunc] Cleaning up client connection...")
 		if err := client.Close(); err != nil {
@@ -242,18 +236,17 @@ var CallGraphQLAgentFunc = func(parentCtx context.Context, apiKey string, conver
 		}
 	}()
 
-	if err := client.Connect(ctx); err != nil { // Use the cancellable ctx for connect
+	if err := client.Connect(ctx); err != nil {
 		log.Printf("[CallGraphQLAgentFunc] Connection failed: %v", err)
 		select {
 		case errorChan <- fmt.Errorf("graphql connection failed: %w", err):
-		case <-parentCtx.Done(): // Check parentCtx if the errorChan send blocks
+		case <-parentCtx.Done():
 			log.Printf("[CallGraphQLAgentFunc] Parent context done while sending connection error.")
 		}
 		return
 	}
 
 	log.Println("[CallGraphQLAgentFunc] Connected to GraphQL. Setting up subscription...")
-	// ... (your query setup code remains the same) ...
 	var messageBlockBuffer bytes.Buffer
 	messageBlockBuffer.WriteString("[")
 	for i, msg := range messages {
@@ -263,7 +256,7 @@ var CallGraphQLAgentFunc = func(parentCtx context.Context, apiKey string, conver
 			Role:    msg.Role,
 			TurnID:  msg.TurnID,
 		}
-		escapedContent := escapeString(messageInput.Content) // Ensure escapeString is defined
+		escapedContent := escapeString(messageInput.Content)
 		messageBlockBuffer.WriteString(fmt.Sprintf(`{
 			content: "%s",
 			format: "%s",
@@ -306,7 +299,7 @@ var CallGraphQLAgentFunc = func(parentCtx context.Context, apiKey string, conver
 			log.Printf("[GraphQLCallback] Error marshalling payload: %v", marshalErr)
 			select {
 			case errorChan <- fmt.Errorf("payload marshal error: %w", marshalErr):
-			case <-ctx.Done(): // Use the operation's context
+			case <-ctx.Done():
 			}
 			return
 		}
@@ -330,83 +323,65 @@ var CallGraphQLAgentFunc = func(parentCtx context.Context, apiKey string, conver
 		case errorChan <- fmt.Errorf("graphql subscription failed: %w", subscribeErr):
 		case <-parentCtx.Done():
 		}
-		return // This will trigger defer client.Close()
+		return
 	}
 
 	log.Println("[CallGraphQLAgentFunc] Subscription started, now listening for AgentResponse objects until server closes or an error occurs...")
-	listenErr := client.Listen(ctx) // Pass the cancellable ctx
+	listenErr := client.Listen(ctx)
 
-	// After Listen returns:
 	if listenErr != nil {
 		if errors.Is(listenErr, context.Canceled) || errors.Is(listenErr, context.DeadlineExceeded) {
-			// This means ctx (derived from parentCtx or cancelled by CallGraphQLAgentFunc's own logic) was done.
 			log.Printf("[CallGraphQLAgentFunc] Listener stopped due to context cancellation/deadline: %v", listenErr)
 		} else if strings.Contains(listenErr.Error(), "client explicitly closed") || strings.Contains(listenErr.Error(), "client connection field is nil") {
 			log.Printf("[CallGraphQLAgentFunc] Listener stopped as client connection was intentionally closed: %v", listenErr)
 		} else {
-			// Other errors (network, unexpected server close, etc.)
 			log.Printf("[CallGraphQLAgentFunc] Listener returned an error: %v", listenErr)
 			select {
 			case errorChan <- fmt.Errorf("graphql listener error: %w", listenErr):
 			case <-parentCtx.Done():
 				log.Printf("[CallGraphQLAgentFunc] Parent context done while sending listener error.")
-			default: // Non-blocking send
+			default:
 				log.Printf("[CallGraphQLAgentFunc] Error channel full or unavailable when sending listener error: %v", listenErr)
 			}
 		}
 	} else {
-		// listenErr is nil - implies server closed connection gracefully (e.g., CloseNormalClosure).
 		log.Println("[CallGraphQLAgentFunc] GraphQL subscription ended gracefully by server.")
 	}
 
 	processedCount, totalMsgCount := processor.GetStats()
 	log.Printf("[CallGraphQLAgentFunc] GraphQL processing finished for this session. Final stats: %d responses processed, %d total messages sent",
 		processedCount, totalMsgCount)
-	// defer client.Close() will run.
 }
 
-// handleAgentSubscriptionResponseMultiple processes the response from the GraphQL subscription.
-// It returns all MessageOutput messages instead of just the first one.
-// Note: This function is kept for backward compatibility but the new ResponseProcessor is preferred.
 func handleAgentSubscriptionResponseMultiple(response AgentResponse) []*MessageOutput {
 	var results []*MessageOutput
-
 	if len(response.Errors) > 0 {
 		for _, err := range response.Errors {
 			log.Printf("GraphQL Error: %s\n", err.Message)
 		}
-		return results // Return empty slice if there are GraphQL errors
+		return results
 	}
-
 	log.Println("=== Agent Response ===")
-
 	if len(response.Data.Agent.AnonymizationEntities) > 0 {
 		log.Println("Anonymization Entities:")
 		for _, entity := range response.Data.Agent.AnonymizationEntities {
-			log.Printf("  Type: %s, Value: %s, Replacement: %s\n",
-				entity.Type, entity.Value, entity.Replacement)
+			log.Printf("  Type: %s, Value: %s, Replacement: %s\n", entity.Type, entity.Value, entity.Replacement)
 		}
 	}
-
 	if len(response.Data.Agent.Messages) > 0 {
 		log.Printf("Processing %d messages:", len(response.Data.Agent.Messages))
 		for i, msg := range response.Data.Agent.Messages {
-			log.Printf("  Message %d - Role: %s, Format: %s, TurnID: %s\n",
-				i+1, msg.Role, msg.Format, msg.TurnID)
+			log.Printf("  Message %d - Role: %s, Format: %s, TurnID: %s\n", i+1, msg.Role, msg.Format, msg.TurnID)
 			log.Printf("  Content: %s\n", msg.Content)
 			log.Println("  ---")
-
-			// Add each message to results
 			msgCopy := msg
 			results = append(results, &msgCopy)
 		}
 	}
-
 	log.Println("======================")
 	return results
 }
 
-// GraphQLSubscriptionClient manages a GraphQL subscription over WebSocket.
 type GraphQLSubscriptionClient struct {
 	conn           *websocket.Conn
 	url            string
@@ -415,11 +390,10 @@ type GraphQLSubscriptionClient struct {
 	internalCtx    context.Context
 	internalCancel context.CancelFunc
 	listenDone     chan struct{}
-	mu             sync.RWMutex // Added mutex for thread safety
+	mu             sync.RWMutex
 	pingInterval   time.Duration
 }
 
-// NewGraphQLSubscriptionClient creates a new client for GraphQL subscriptions.
 func NewGraphQLSubscriptionClient(wsURL string, pingInterval time.Duration) *GraphQLSubscriptionClient {
 	iCtx, iCancel := context.WithCancel(context.Background())
 	return &GraphQLSubscriptionClient{
@@ -432,86 +406,61 @@ func NewGraphQLSubscriptionClient(wsURL string, pingInterval time.Duration) *Gra
 	}
 }
 
-// Connect establishes a WebSocket connection and initializes the GraphQL protocol.
 func (c *GraphQLSubscriptionClient) Connect(ctx context.Context) error {
 	u, err := url.Parse(c.url)
-	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
-	}
-
-	dialer := websocket.Dialer{
-		Subprotocols: []string{"graphql-transport-ws", "graphql-ws"},
-	}
-
+	if err != nil { return fmt.Errorf("invalid URL: %w", err) }
+	dialer := websocket.Dialer{Subprotocols: []string{"graphql-transport-ws", "graphql-ws"}}
 	conn, resp, err := dialer.DialContext(ctx, u.String(), nil)
-	if err != nil {
-		return fmt.Errorf("dial error: %w", err)
-	}
-
+	if err != nil { return fmt.Errorf("dial error: %w", err) }
 	c.mu.Lock()
 	c.conn = conn
 	c.mu.Unlock()
-
 	if resp != nil && len(resp.Header.Get("Sec-WebSocket-Protocol")) > 0 {
 		c.protocol = resp.Header.Get("Sec-WebSocket-Protocol")
 	} else {
-		c.protocol = "graphql-ws"
+		c.protocol = "graphql-ws" // Default if not specified by server
 	}
 	log.Printf("[GraphQLClient] Using protocol: %s\n", c.protocol)
-
 	initMsgType := "connection_init"
-	initPayload := make(map[string]interface{})
-
+	initPayload := make(map[string]interface{}) // Empty payload for graphql-ws
 	if err := c.sendMessage(GraphQLMessage{Type: initMsgType, Payload: initPayload}); err != nil {
-		c.conn.Close()
+		conn.Close() // Ensure connection is closed on error
 		return fmt.Errorf("init error: %w", err)
 	}
-
-	// Wait for acknowledgment
 	var ackMsg GraphQLMessage
-	c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	if err := c.conn.ReadJSON(&ackMsg); err != nil {
-		c.conn.Close()
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if err := conn.ReadJSON(&ackMsg); err != nil {
+		conn.Close()
 		return fmt.Errorf("ack read error: %w", err)
 	}
-	c.conn.SetReadDeadline(time.Time{})
-
+	conn.SetReadDeadline(time.Time{}) // Clear deadline
 	expectedAckType := "connection_ack"
-
 	if ackMsg.Type != expectedAckType {
-		c.conn.Close()
+		conn.Close()
 		return fmt.Errorf("expected ack type '%s', got: '%s'", expectedAckType, ackMsg.Type)
 	}
-
 	log.Printf("[GraphQLClient] Connection established and acknowledged")
-
-	// Set custom pong handler
-	c.conn.SetPongHandler(func(appData string) error {
+	conn.SetPongHandler(func(appData string) error {
 		log.Printf("[GraphQLClient] Received pong from server. AppData: %s", appData)
-		// The gorilla/websocket library automatically updates the read deadline on pong.
-		// No need to manually call c.conn.SetReadDeadline here unless custom logic is required.
 		return nil
 	})
-
 	return nil
 }
 
-// Close signals the listener to stop and closes the WebSocket connection.
 func (c *GraphQLSubscriptionClient) Close() error {
 	log.Printf("[GraphQLClient] Initiating close sequence")
-	c.internalCancel()
+	c.internalCancel() // Signal Listen loop and other operations to stop
 
 	c.mu.Lock()
 	conn := c.conn
-	c.conn = nil
+	c.conn = nil // Make original conn unavailable for new operations
 	c.mu.Unlock()
 
 	if conn != nil {
 		log.Printf("[GraphQLClient] Closing WebSocket connection")
-		err := conn.Close()
-		return err
+		return conn.Close()
 	}
-	log.Printf("[GraphQLClient] Connection was already closed")
+	log.Printf("[GraphQLClient] Connection was already closed or nil")
 	return nil
 }
 
@@ -519,183 +468,195 @@ func (c *GraphQLSubscriptionClient) sendMessage(msg GraphQLMessage) error {
 	c.mu.RLock()
 	conn := c.conn
 	c.mu.RUnlock()
-
-	if conn == nil {
-		return fmt.Errorf("cannot send message: connection is not established or already closed")
-	}
-
+	if conn == nil { return fmt.Errorf("cannot send message: connection is not established or already closed") }
 	log.Printf("[GraphQLClient] Sending WebSocket message: Type=%s, ID=%s\n", msg.Type, msg.ID)
-	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	conn.SetWriteDeadline(time.Now().Add(writeWait))
 	err := conn.WriteJSON(msg)
-	conn.SetWriteDeadline(time.Time{})
+	conn.SetWriteDeadline(time.Time{}) // Clear deadline immediately after write
 	return err
 }
 
-// Subscribe sends a subscription request over the WebSocket.
 func (c *GraphQLSubscriptionClient) Subscribe(subscriptionID, query string, variables map[string]interface{}, callback func(interface{})) error {
 	c.mu.Lock()
 	c.callbacks[subscriptionID] = callback
 	c.mu.Unlock()
-
-	var msgType string
+	msgType := "start" // Default for graphql-ws
 	if c.protocol == "graphql-transport-ws" {
 		msgType = "subscribe"
-	} else {
-		msgType = "start"
 	}
-
-	payload := map[string]interface{}{
-		"query": query,
-	}
-	if variables != nil {
-		payload["variables"] = variables
-	}
-
-	msg := GraphQLMessage{
-		ID:      subscriptionID,
-		Type:    msgType,
-		Payload: payload,
-	}
-
+	payload := map[string]interface{}{"query": query}
+	if variables != nil { payload["variables"] = variables }
+	msg := GraphQLMessage{ID: subscriptionID, Type: msgType, Payload: payload}
 	log.Printf("[GraphQLClient] Subscribing with ID: %s", subscriptionID)
 	return c.sendMessage(msg)
 }
 
 // Listen starts listening for messages from the WebSocket connection.
 func (c *GraphQLSubscriptionClient) Listen(ctx context.Context) error {
-	defer close(c.listenDone) // Signal that Listen has finished its execution.
-	log.Printf("[GraphQLClient] Starting to listen for messages. Will continue until context is done, client is closed, or a fatal websocket error occurs.")
+	defer close(c.listenDone)
+	log.Printf("[GraphQLClient] Starting to listen for messages...")
 
 	ticker := time.NewTicker(c.pingInterval)
 	defer ticker.Stop()
 
-	// readWait should be longer than pingInterval.
-	// It's the maximum time to wait for a message (including pongs which are handled by the library)
-	// before the connection is considered stale.
-	// Set to 2x ping interval, with a minimum.
-	localReadWait := c.pingInterval * 2
-	minReadWait := 2 * time.Second // Minimum time for a read attempt, ensures ticker gets serviced.
-	if localReadWait < minReadWait {
-		localReadWait = minReadWait
+	// Use shorter read wait to make ping attempts more frequent
+	localReadWait := c.pingInterval + 100*time.Millisecond
+	if localReadWait < 500*time.Millisecond { // Ensure a minimum practical read wait
+		localReadWait = 500 * time.Millisecond
 	}
-	log.Printf("[GraphQLClient] Effective read wait for connection: %s (ping interval: %s)", localReadWait.String(), c.pingInterval.String())
-
+	log.Printf("[GraphQLClient] Effective read wait for connection: %s (ping interval: %s)", localReadWait, c.pingInterval)
 
 	messageCount := 0
 
 	for {
 		var msg GraphQLMessage
-		var err error
+		var errLoop error // Error for this loop iteration, distinct from errReadJSON
 
-		// Prioritize checking for stop signals (from parent context or internal client.Close())
+		// Prioritize context checks.
 		select {
 		case <-ctx.Done():
-			log.Printf("[GraphQLClient] Main context done (from CallGraphQLAgentFunc), stopping listener (processed %d messages). Error: %v", messageCount, ctx.Err())
+			log.Printf("[GraphQLClient] Main context done, stopping listener. Processed %d messages. Error: %v", messageCount, ctx.Err())
 			return ctx.Err()
-		case <-c.internalCtx.Done(): // c.internalCtx is cancelled by c.Close()
-			log.Printf("[GraphQLClient] Internal context done (client.Close() called), stopping listener (processed %d messages). Error: %v", messageCount, c.internalCtx.Err())
+		case <-c.internalCtx.Done():
+			log.Printf("[GraphQLClient] Internal context done (client.Close likely called), stopping listener. Processed %d messages. Error: %v", messageCount, c.internalCtx.Err())
+			c.mu.RLock()
+			connToInterrupt := c.conn
+			c.mu.RUnlock()
+			if connToInterrupt != nil {
+				log.Printf("[GraphQLClient] Setting immediate read deadline on connection to interrupt ReadJSON due to internal close.")
+				_ = connToInterrupt.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
+			}
 			return fmt.Errorf("client explicitly closed: %w", c.internalCtx.Err())
 		case <-ticker.C:
 			c.mu.RLock()
 			conn := c.conn
 			c.mu.RUnlock()
 			if conn == nil {
-				log.Printf("[GraphQLClient] Ping: Connection is nil, skipping ping.")
-				// If conn is nil, the main read loop will likely handle shutdown soon.
-				continue
+				log.Printf("[GraphQLClient] Ping: Connection is nil. Listener terminating.")
+				return errors.New("ping attempt on nil connection")
 			}
+			log.Printf("[GraphQLClient] Attempting to send ping...")
 			if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(writeWait)); err != nil {
-				log.Printf("[GraphQLClient] Error sending ping: %v", err)
-				// Depending on policy, we might not want to return error immediately.
-				// The read loop will likely detect a dead connection.
-			} else {
-				log.Printf("[GraphQLClient] Ping sent successfully.")
+				log.Printf("[GraphQLClient] Error sending ping: %v. Terminating listener.", err)
+				return fmt.Errorf("failed to send ping: %w", err)
 			}
+			log.Printf("[GraphQLClient] Ping sent successfully.")
+			continue // Restart select to prioritize contexts and avoid immediate read.
 		default:
-			// No immediate stop signal, proceed to attempt a read.
+			// No immediate context cancellation or ping, proceed to attempt a read.
+		}
+
+		// Pre-read check for internal context, if it was cancelled while in default path of above select.
+		select {
+		case <-c.internalCtx.Done():
+			log.Printf("[GraphQLClient] Internal context done (pre-read check), stopping. Processed %d messages. Error: %v", messageCount, c.internalCtx.Err())
+			return fmt.Errorf("client explicitly closed (pre-read): %w", c.internalCtx.Err())
+		default:
+			// Continue to read
 		}
 
 		c.mu.RLock()
-		currentConn := c.conn // Use 'currentConn' for clarity within this iteration
+		currentConn := c.conn
 		c.mu.RUnlock()
 
 		if currentConn == nil {
-			log.Printf("[GraphQLClient] Connection is nil (already closed by client instance). Stopping listener (processed %d messages).", messageCount)
-			// This typically means c.Close() was called and completed.
-			return errors.New("websocket connection unavailable (client connection field is nil)")
+			log.Printf("[GraphQLClient] Read attempt: Connection is nil. Stopping. (processed %d messages)", messageCount)
+			return errors.New("read attempt on nil connection")
 		}
 
-		// Set a read deadline. This is important to prevent ReadJSON from blocking indefinitely,
-		// allowing the loop to regularly check the contexts (ctx.Done, c.internalCtx.Done).
-		// If the server sends keep-alives, they will be read. If not, this timeout ensures liveness checks.
-		// The localReadWait duration should be longer than the ping interval.
 		deadline := time.Now().Add(localReadWait)
-		if err := currentConn.SetReadDeadline(deadline); err != nil {
-			log.Printf("[GraphQLClient] Error setting read deadline: %v. Stopping listener.", err)
-			return fmt.Errorf("error setting read deadline: %w", err)
+		log.Printf("[GraphQLClient] Setting read deadline to: %v (current time: %v, wait: %s)", deadline, time.Now(), localReadWait)
+		if errSettingDeadline := currentConn.SetReadDeadline(deadline); errSettingDeadline != nil {
+			log.Printf("[GraphQLClient] Error setting read deadline: %v. Checking internal context.", errSettingDeadline)
+			select {
+			case <-c.internalCtx.Done():
+				return fmt.Errorf("client explicitly closed during SetReadDeadline: %w (original error: %v)", c.internalCtx.Err(), errSettingDeadline)
+			default:
+				return fmt.Errorf("error setting read deadline: %w", errSettingDeadline)
+			}
 		}
 
-		err = currentConn.ReadJSON(&msg)
-		// It's good practice to clear the deadline after the read operation.
-		// Ignoring error on clearing deadline as the primary error 'err' from ReadJSON is more important.
-		_ = currentConn.SetReadDeadline(time.Time{})
+		var readPanicErr error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					stackBuf := make([]byte, 4096) // Buffer for stack trace
+					stackLength := runtime.Stack(stackBuf, false) // Get stack trace
+					log.Printf("[GraphQLClient] PANIC recovered during ReadJSON: %v\nStack: %s", r, stackBuf[:stackLength])
+					readPanicErr = fmt.Errorf("panic recovered from ReadJSON: %v", r)
+				}
+			}()
+			// This is the line (approx 653 based on previous logs) that might panic
+			errLoop = currentConn.ReadJSON(&msg)
+		}()
 
-		if err != nil {
-			// 1. Handle timeout: Check contexts, then continue if no shutdown signal.
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				log.Printf("[GraphQLClient] Read timeout (waited up to %s). Checking for shutdown signals...", localReadWait.String())
-				// Explicitly check contexts again, as the select at the loop start might not have run if ReadJSON blocked for its full duration.
+		if readPanicErr != nil {
+			errLoop = readPanicErr // Prioritize panic error
+		}
+
+		if errLoop == nil { // Successful read
+			_ = currentConn.SetReadDeadline(time.Time{}) // Clear deadline
+		}
+
+		if errLoop != nil {
+			log.Printf("[GraphQLClient] ReadJSON returned error: %T %v", errLoop, errLoop)
+			select {
+			case <-c.internalCtx.Done():
+				log.Printf("[GraphQLClient] Read error '%v', and internal context is also done. Client explicitly closed. (processed %d messages)", errLoop, messageCount)
+				return fmt.Errorf("client explicitly closed, ReadJSON unblocked with error: %w (original error: %v)", c.internalCtx.Err(), errLoop)
+			default:
+			}
+
+			if netErr, ok := errLoop.(net.Error); ok && netErr.Timeout() {
+				log.Printf("[GraphQLClient] Read timeout (waited up to %s). Checking for shutdown signals and connection health...", localReadWait.String())
 				select {
-				case <-ctx.Done():
-					log.Printf("[GraphQLClient] Read timeout, but main context is done. Stopping. Error: %v", ctx.Err())
-					return ctx.Err()
 				case <-c.internalCtx.Done():
-					log.Printf("[GraphQLClient] Read timeout, but internal context (client.Close) is done. Stopping. Error: %v", c.internalCtx.Err())
-					return fmt.Errorf("client explicitly closed during timeout: %w", c.internalCtx.Err())
+					log.Printf("[GraphQLClient] Read timeout, but internal context is done (client.Close likely called). Processed %d messages.", messageCount)
+					return fmt.Errorf("client explicitly closed, inducing read timeout: %w (original error: %v)", c.internalCtx.Err(), errLoop)
+				case <-ctx.Done():
+					log.Printf("[GraphQLClient] Read timeout, but main context is done. Processed %d messages. Error: %v", messageCount, ctx.Err())
+					return ctx.Err()
 				default:
-					// Genuine timeout on read. Server might be legitimately quiet.
-					// Connection is not necessarily broken. Continue listening.
-					log.Printf("[GraphQLClient] Read timed out, but no shutdown signal. Will attempt to read again.")
-					continue // Continue to the next iteration of the for loop.
+					// Contexts are not done. Before continuing, try a quick ping to see if the connection is still responsive.
+					c.mu.RLock()
+					pingCheckConn := c.conn
+					c.mu.RUnlock()
+
+					if pingCheckConn != nil {
+						pingErr := pingCheckConn.WriteControl(websocket.PingMessage, []byte("healthcheck"), time.Now().Add(1*time.Second))
+						if pingErr == nil {
+							log.Printf("[GraphQLClient] Read timed out, but connection responded to health check ping. Will attempt to read again.")
+							continue // Healthy enough to try reading again
+						}
+						log.Printf("[GraphQLClient] Read timed out, AND health check ping failed (%v). Connection assumed dead.", pingErr)
+						return fmt.Errorf("read timeout, health check ping failed: %w (original timeout: %v)", pingErr, errLoop)
+					}
+					// Connection is nil, cannot perform health check.
+					log.Printf("[GraphQLClient] Read timed out, but connection became nil before health check. Terminating.")
+					return fmt.Errorf("connection nil before health check after read timeout: %w", errLoop)
 				}
 			}
 
-			// 2. Handle WebSocket close errors (server or client initiated proper WebSocket closure)
-			if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
-				log.Printf("[GraphQLClient] WebSocket closed normally by peer (CloseNormalClosure): %v (processed %d messages)", err, messageCount)
-				return nil // Indicates graceful server-side closure. CallGraphQLAgentFunc will then clean up.
+			if websocket.IsCloseError(errLoop, websocket.CloseNormalClosure) {
+				log.Printf("[GraphQLClient] WebSocket closed normally by peer: %v (processed %d messages)", errLoop, messageCount)
+				return nil
 			}
-			// Check for any other type of WebSocket close error.
 			var wsCloseErr *websocket.CloseError
-			if errors.As(err, &wsCloseErr) {
-				log.Printf("[GraphQLClient] WebSocket closed with specific code %d: %v (processed %d messages)", wsCloseErr.Code, err, messageCount)
-				return fmt.Errorf("websocket closed with code %d: %w", wsCloseErr.Code, err) // Indicate an error closure.
+			if errors.As(errLoop, &wsCloseErr) {
+				log.Printf("[GraphQLClient] WebSocket closed with specific code %d: %v (processed %d messages)", wsCloseErr.Code, errLoop, messageCount)
+				return fmt.Errorf("websocket closed with code %d: %w", wsCloseErr.Code, errLoop)
 			}
-			// IsUnexpectedCloseError for abrupt network issues where no proper WS close frame was received.
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNoStatusReceived) {
-				log.Printf("[GraphQLClient] WebSocket unexpected close error (e.g. network issue, server crash): %v (processed %d messages)", err, messageCount)
-				return fmt.Errorf("websocket unexpected close: %w", err)
-			}
-
-			// 3. Re-check c.conn field state, as c.Close() could have been called concurrently
-			// and nulled c.conn while this read operation was failing for a different reason.
-			c.mu.RLock()
-			connStillAssignedInClient := c.conn != nil
-			c.mu.RUnlock()
-			if !connStillAssignedInClient {
-				log.Printf("[GraphQLClient] Connection field became nil during read error processing. Client likely closed. (processed %d messages). Original error: %v", messageCount, err)
-				return errors.New("graphql client connection field is nil (client closed during read error)")
+			if websocket.IsUnexpectedCloseError(errLoop, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNoStatusReceived) {
+				log.Printf("[GraphQLClient] WebSocket unexpected close error: %v (processed %d messages)", errLoop, messageCount) // Corrected to errLoop
+				return fmt.Errorf("websocket unexpected close: %w", errLoop)
 			}
 
-			// 4. Any other error is likely a persistent issue with the connection.
-			log.Printf("[GraphQLClient] Unhandled persistent read error: %v (processed %d messages)", err, messageCount)
-			return fmt.Errorf("persistent websocket read error: %w", err)
+			log.Printf("[GraphQLClient] Unhandled persistent read error: %v (processed %d messages)", errLoop, messageCount)
+			return fmt.Errorf("persistent websocket read error: %w", errLoop)
 		}
 
-		// If err is nil, process the message
 		messageCount++
 		log.Printf("[GraphQLClient] Received message #%d: Type=%s, ID=%s", messageCount, msg.Type, msg.ID)
-
 		switch msg.Type {
 		case "next", "data":
 			c.mu.RLock()
@@ -707,142 +668,32 @@ func (c *GraphQLSubscriptionClient) Listen(ctx context.Context) error {
 			} else {
 				log.Printf("[GraphQLClient] No callback found for subscription ID: %s", msg.ID)
 			}
-		case "error": // GraphQL specific error over WebSocket, not a transport error
+		case "error":
 			log.Printf("[GraphQLClient] GraphQL subscription error message received: ID=%s, Payload=%+v", msg.ID, msg.Payload)
 			c.mu.RLock()
 			callback, exists := c.callbacks[msg.ID]
 			c.mu.RUnlock()
 			if exists && callback != nil {
-				callback(map[string]interface{}{ // Adapt to how AgentResponse handles errors
-					"errors": []map[string]interface{}{
-						{"message": fmt.Sprintf("GraphQL subscription error via WebSocket: ID=%s, Payload=%+v", msg.ID, msg.Payload)},
-					},
-				})
+				callback(map[string]interface{}{"errors": []map[string]interface{}{{"message": fmt.Sprintf("GraphQL subscription error via WebSocket: ID=%s, Payload=%+v", msg.ID, msg.Payload)}}})
 			}
 		case "complete":
 			log.Printf("[GraphQLClient] GraphQL subscription completed for ID: %s", msg.ID)
 			c.mu.Lock()
-			delete(c.callbacks, msg.ID) // This specific subscription is done.
+			delete(c.callbacks, msg.ID)
 			c.mu.Unlock()
-			// The connection itself stays open for other active/new subscriptions.
-		case "connection_keep_alive", "ka", "ping": // Common keep-alive types
+		case "connection_keep_alive", "ka", "ping":
 			log.Printf("[GraphQLClient] Received keep-alive/ping message type: %s", msg.Type)
-			if msg.Type == "ping" && c.protocol == "graphql-transport-ws" { // graphql-transport-ws expects pong
-				if err := c.sendMessage(GraphQLMessage{Type: "pong", Payload: msg.Payload}); err != nil {
+			if msg.Type == "ping" && c.protocol == "graphql-transport-ws" {
+				if err := c.sendMessage(GraphQLMessage{Type: "pong", Payload: msg.Payload}); err != nil { // Use loop-scoped 'err' here or new var
 					log.Printf("[GraphQLClient] Error sending pong: %v", err)
-					// This might be a critical error for the connection if pongs are mandatory.
-					// However, an error sending pong might mean the connection is already bad.
 				} else {
 					log.Printf("[GraphQLClient] Sent pong in response to ping.")
 				}
 			}
-		case "pong": // Received a pong, perhaps in response to a client-sent ping (not implemented here)
+		case "pong":
 			log.Printf("[GraphQLClient] Received pong message type: %s", msg.Type)
 		default:
 			log.Printf("[GraphQLClient] Unhandled message type: %s. Payload: %+v", msg.Type, msg.Payload)
 		}
 	}
 }
-
-//func main() {
-
-//var GraphQLAgentAPIURL = "ws://localhost:8080/subscriptions"
-//	messageChan := make(chan string, 500) // Buffer size as appropriate
-//	errorChan := make(chan error, 50)     // Buffer size as appropriate
-//
-//	// Create a context that can be cancelled on application shutdown (e.g., by OS signal)
-//	appCtx, appShutdownSignal := context.WithCancel(context.Background())
-//	// Ensure appShutdownSignal() is called to clean up all long-running goroutines when main exits.
-//	// One way is to defer it, another is to call it explicitly before main returns.
-//	// defer appShutdownSignal() // Call this if main might exit for reasons other than signals
-//
-//	log.Println("[Main] Starting GraphQL agent function in a goroutine...")
-//
-//	// Use a WaitGroup if you want main to wait for CallGraphQLAgentFunc to finish before exiting completely
-//	var wg sync.WaitGroup
-//	wg.Add(1)
-//	go func() {
-//		defer wg.Done()
-//		// Pass appCtx to CallGraphQLAgentFunc for its operational lifetime
-//		CallGraphQLAgentFunc(
-//			appCtx,
-//			"your-api-key",
-//			"conversation-123",
-//			"user-456",
-//			"tenant-789",
-//			"channel-001",
-//			[]Message{ // Sample messages
-//				{Content: "Hello, how can I help you?", Format: "text", Role: "user", TurnID: "turn-1"},
-//				{Content: "Please provide information about your services.", Format: "text", Role: "user", TurnID: "turn-2"},
-//			},
-//			GraphQLAgentAPIURL,
-//			messageChan,
-//			errorChan,
-//		)
-//		log.Println("[Main] CallGraphQLAgentFunc goroutine has finished.")
-//		// Since CallGraphQLAgentFunc might be the producer for messageChan and errorChan indirectly
-//		// via ResponseProcessor, and ResponseProcessor stops on context cancellation,
-//		// these channels will stop receiving new items. Consider if they need explicit closing.
-//		// For this example, we'll rely on them draining or GC.
-//	}()
-//
-//	log.Println("[Main] Indefinitely processing messages and errors. Press Ctrl+C to shutdown.")
-//	messageCount := 0
-//	errorCount := 0
-//	keepRunning := true
-//
-//	// Setup signal handling for graceful shutdown
-//	osSignalChan := make(chan os.Signal, 1)
-//	signal.Notify(osSignalChan, syscall.SIGINT, syscall.SIGTERM)
-//
-//	for keepRunning {
-//		select {
-//		case msg, ok := <-messageChan:
-//			if !ok {
-//				log.Printf("[Main] Message channel closed. Total messages received: %d", messageCount)
-//				// If messageChan closes, it might mean the producer (CallGraphQLAgentFunc) has exited.
-//				// You might want to trigger a shutdown or just stop this part of the loop.
-//				messageChan = nil // Disable this case
-//				if errorChan == nil {
-//					keepRunning = false
-//				} // Exit if both channels are done
-//				break
-//			}
-//			messageCount++
-//			log.Printf("[Main] Received message #%d: %.100s...", messageCount, msg)
-//			// Process the message here
-//
-//		case err, ok := <-errorChan:
-//			if !ok {
-//				log.Printf("[Main] Error channel closed. Total errors received: %d", errorCount)
-//				errorChan = nil // Disable this case
-//				if messageChan == nil {
-//					keepRunning = false
-//				} // Exit if both channels are done
-//				break
-//			}
-//			errorCount++
-//			log.Printf("[Main] Received error #%d: %v", errorCount, err)
-//			// Handle the error. Depending on the error, you might decide to shut down the application.
-//			// For example, if it's a critical, unrecoverable error from CallGraphQLAgentFunc.
-//			// if isFatal(err) { appShutdownSignal() }
-//
-//		case s := <-osSignalChan:
-//			log.Printf("[Main] Received OS signal %v. Initiating graceful shutdown...", s)
-//			appShutdownSignal() // Signal all components using appCtx to stop
-//			// keepRunning will eventually become false as appCtx.Done() is processed by CallGraphQLAgentFunc
-//			// and channels might close. Or set keepRunning = false directly.
-//			// For a more deterministic shutdown, you can have a timeout here.
-//
-//		case <-appCtx.Done(): // If appCtx is cancelled (e.g., by the signal handler above)
-//			log.Println("[Main] Application context is done. Exiting message processing loop.")
-//			keepRunning = false // This will break the loop.
-//		}
-//	}
-//
-//	log.Println("[Main] Waiting for CallGraphQLAgentFunc to complete shutdown...")
-//	wg.Wait() // Wait for the agent goroutine to finish its cleanup
-//
-//	log.Printf("[Main] Finished all processing. Final stats - Messages: %d, Errors: %d", messageCount, errorCount)
-//	log.Println("[Main] Application exiting.")
-//}
