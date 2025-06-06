@@ -18,14 +18,14 @@ import (
 // If you add non-reference types to your configuration struct, be sure to rewrite Clone as a deep
 // copy appropriate for your types.
 type CustomEndpoint struct {
-	Name     string `json:"Name"`
-	Endpoint string `json:"Endpoint"`
+	Name     string
+	Endpoint string
 }
 
 type configuration struct {
-	MaestroURL                 string           `json:"MaestroURL"` // Renamed from GraphQLAgentWebSocketURL
-	CustomEndpoints            []CustomEndpoint `json:"CustomEndpoints"`
-	GraphQLPingIntervalSeconds *int             `json:"GraphQLPingIntervalSeconds"`
+	MaestroURL                 string // Renamed from GraphQLAgentWebSocketURL
+	CustomEndpoints            []CustomEndpoint
+	GraphQLPingIntervalSeconds *int `json:"GraphQLPingIntervalSeconds"`
 }
 
 // Clone shallow copies the configuration. Your implementation may require a deep copy if

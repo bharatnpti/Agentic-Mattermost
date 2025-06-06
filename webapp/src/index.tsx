@@ -8,13 +8,13 @@ import type {GlobalState} from '@mattermost/types/store';
 import manifest from '@/manifest';
 import type {PluginRegistry} from '@/types/mattermost-webapp';
 
-import CustomEndpointsComponent from './components/CustomEndpointsComponent';
+import CustomEndpointSetting from './components/custom_endpoint_setting/custom_endpoint_setting';
 
 export default class Plugin {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars, @typescript-eslint/no-empty-function
     public async initialize(registry: PluginRegistry, store: Store<GlobalState, Action<Record<string, unknown>>>) {
         // @see https://developers.mattermost.com/extend/plugins/webapp/reference/
-        registry.registerAdminConsoleCustomSetting('CustomEndpoints', CustomEndpointsComponent);
+        registry.registerAdminConsoleCustomSetting('CustomEndpoints', CustomEndpointSetting);
     }
 }
 
