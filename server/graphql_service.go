@@ -222,7 +222,7 @@ func escapeString(input string) string {
 
 // CallGraphQLAgentFunc connects to a GraphQL subscription endpoint and continuously processes multiple AgentResponse objects.
 // Enhanced to better handle multiple responses from the GraphQL server.
-var CallGraphQLAgentFunc = func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, pingInterval time.Duration, messageChan chan<- string, errorChan chan<- error) {
+var CallGraphQLAgentFunc = func(parentCtx context.Context, agentName string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, pingInterval time.Duration, messageChan chan<- string, errorChan chan<- error) {
 	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
@@ -408,10 +408,14 @@ func NewGraphQLSubscriptionClient(wsURL string, pingInterval time.Duration) *Gra
 
 func (c *GraphQLSubscriptionClient) Connect(ctx context.Context) error {
 	u, err := url.Parse(c.url)
-	if err != nil { return fmt.Errorf("invalid URL: %w", err) }
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
 	dialer := websocket.Dialer{Subprotocols: []string{"graphql-transport-ws", "graphql-ws"}}
 	conn, resp, err := dialer.DialContext(ctx, u.String(), nil)
-	if err != nil { return fmt.Errorf("dial error: %w", err) }
+	if err != nil {
+		return fmt.Errorf("dial error: %w", err)
+	}
 	c.mu.Lock()
 	c.conn = conn
 	c.mu.Unlock()
@@ -468,7 +472,9 @@ func (c *GraphQLSubscriptionClient) sendMessage(msg GraphQLMessage) error {
 	c.mu.RLock()
 	conn := c.conn
 	c.mu.RUnlock()
-	if conn == nil { return fmt.Errorf("cannot send message: connection is not established or already closed") }
+	if conn == nil {
+		return fmt.Errorf("cannot send message: connection is not established or already closed")
+	}
 	log.Printf("[GraphQLClient] Sending WebSocket message: Type=%s, ID=%s\n", msg.Type, msg.ID)
 	conn.SetWriteDeadline(time.Now().Add(writeWait))
 	err := conn.WriteJSON(msg)
@@ -485,7 +491,9 @@ func (c *GraphQLSubscriptionClient) Subscribe(subscriptionID, query string, vari
 		msgType = "subscribe"
 	}
 	payload := map[string]interface{}{"query": query}
-	if variables != nil { payload["variables"] = variables }
+	if variables != nil {
+		payload["variables"] = variables
+	}
 	msg := GraphQLMessage{ID: subscriptionID, Type: msgType, Payload: payload}
 	log.Printf("[GraphQLClient] Subscribing with ID: %s", subscriptionID)
 	return c.sendMessage(msg)
@@ -580,7 +588,7 @@ func (c *GraphQLSubscriptionClient) Listen(ctx context.Context) error {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					stackBuf := make([]byte, 4096) // Buffer for stack trace
+					stackBuf := make([]byte, 4096)                // Buffer for stack trace
 					stackLength := runtime.Stack(stackBuf, false) // Get stack trace
 					log.Printf("[GraphQLClient] PANIC recovered during ReadJSON: %v\nStack: %s", r, stackBuf[:stackLength])
 					readPanicErr = fmt.Errorf("panic recovered from ReadJSON: %v", r)

@@ -55,9 +55,9 @@ func (h *MaestroHandler) MessageHasBeenPosted(c *plugin.Context, post *model.Pos
 		"arguments_string", argumentsString,
 	)
 
-	taskName, numMessages, err := h.parseMaestroArgsNewFormat(argumentsString)
+	agentName, numMessages, text, err := h.parseMaestroArgsNewFormat(argumentsString)
 	// Test LogDebug call immediately after parseMaestroArgsNewFormat
-	h.API.LogDebug("DEBUG: MessageHasBeenPosted: After parseMaestroArgsNewFormat", "taskName", taskName, "numMessages", numMessages, "err", fmt.Sprintf("%v", err))
+	h.API.LogDebug("DEBUG: MessageHasBeenPosted: After parseMaestroArgsNewFormat", "agentName", agentName, "numMessages", numMessages, "message: ", text, "err", fmt.Sprintf("%v", err))
 	if err != nil {
 		h.API.SendEphemeralPost(post.UserId, &model.Post{
 			ChannelId: post.ChannelId,
@@ -68,51 +68,56 @@ func (h *MaestroHandler) MessageHasBeenPosted(c *plugin.Context, post *model.Pos
 		return
 	}
 
-	if err := h.processMaestroTask(taskName, numMessages, post.ChannelId, post.UserId, post.Id); err != nil {
+	if err := h.processMaestroTask(agentName, numMessages, post.ChannelId, post.UserId, post.Id); err != nil {
 		// Add a simpler debug log to ensure it prints, using standard fmt.Println
 		fmt.Printf("STANDARD_DEBUG: MessageHasBeenPosted: processMaestroTask returned non-nil error. Error: %#v\n", err)
 		// These LogDebug calls might not be showing up, keeping them for now.
 		h.API.LogDebug("DEBUG: MessageHasBeenPosted: Entered processMaestroTask error block.")
 		h.API.LogDebug("DEBUG: MessageHasBeenPosted: err value is", "err_val_sprintf", fmt.Sprintf("%#v", err))
 		h.API.LogDebug("DEBUG: MessageHasBeenPosted: err string is", "err_str", err.Error())
-		h.API.LogError("Error processing !maestro task", "error", err.Error(), "user_id", post.UserId, "task_name", taskName)
+		h.API.LogError("Error processing !maestro task", "error", err.Error(), "user_id", post.UserId, "task_name", agentName)
 	}
 }
 
-func (h *MaestroHandler) parseMaestroArgsNewFormat(argsString string) (taskText string, numMessages int, err error) {
+func (h *MaestroHandler) parseMaestroArgsNewFormat(argsString string) (agentName string, numMessages int, taskText string, err error) {
 	h.API.LogInfo("Parsing Maestro arguments", "args", argsString)
 
 	fields := strings.Fields(argsString)
-	// DefaultNumMessages should be accessible, e.g. defined in model.go or passed via config/struct
-	// For now, let's use a local constant or retrieve from a shared package if defined elsewhere.
-	// Assuming command.DefaultNumMessages is accessible or replaced.
-	// Let's define it here for now if not available globally.
-	const DefaultNumMessages = 10 // Or retrieve from a shared constants/config package
+	const DefaultNumMessages = 10
+	numMessages = DefaultNumMessages
 
-	numMessages = DefaultNumMessages // Default value
 	taskTextStart := 0
 
-	if len(fields) >= 2 && fields[0] == "-n" {
-		val, convErr := strconv.Atoi(fields[1])
+	// Check for optional agent name
+	if len(fields) > 0 && strings.HasPrefix(fields[0], "$") {
+		agentName = fields[0][1:] // strip leading $
+		taskTextStart = 1
+	}
+
+	// Check for optional -n <int>
+	if len(fields) > taskTextStart+1 && fields[taskTextStart] == "-n" {
+		val, convErr := strconv.Atoi(fields[taskTextStart+1])
 		if convErr != nil {
-			return "", 0, fmt.Errorf("invalid value for -n: '%s'. It must be an integer", fields[1])
+			return "", 0, "", fmt.Errorf("invalid value for -n: '%s'. It must be an integer", fields[taskTextStart+1])
 		}
 		if val <= 0 {
-			return "", 0, fmt.Errorf("invalid value for -n: %d. It must be a positive integer", val)
+			return "", 0, "", fmt.Errorf("invalid value for -n: %d. It must be a positive integer", val)
 		}
 		numMessages = val
-		taskTextStart = 2
+		taskTextStart += 2
 	}
 
-	if len(fields) > taskTextStart {
-		taskText = strings.Join(fields[taskTextStart:], " ")
+	// Ensure there's task text remaining
+	if len(fields) <= taskTextStart {
+		return "", 0, "", fmt.Errorf("missing task text")
 	}
 
-	return taskText, numMessages, nil
+	taskText = strings.Join(fields[taskTextStart:], " ")
+	return agentName, numMessages, taskText, nil
 }
 
-func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, channelID string, userID string, rootID string) error {
-	h.API.LogInfo("Processing Maestro task", "taskName", taskName)
+func (h *MaestroHandler) processMaestroTask(agentName string, numMessages int, channelID string, userID string, rootID string) error {
+	h.API.LogInfo("Processing Maestro task", "agentName", agentName)
 
 	originalPost, appErr := h.API.GetPost(rootID)
 	if appErr != nil {
@@ -159,14 +164,36 @@ func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, ch
 	graphQLSystemChannelID := "ONEAPPWEB"
 
 	config := h.GetConfig()
-	webSocketURL := config.MaestroURL
+	endpoints := config.CustomEndpoints
+
+	var found *CustomEndpoint
+
+	for i, e := range endpoints {
+		fmt.Printf("Iterating Agents: %d: %s -> %s\n", i, e.Name, e.Endpoint)
+	}
+
+	for i, e := range endpoints {
+		if e.Name == agentName {
+			found = &endpoints[i]
+			break
+		}
+	}
+
+	if found != nil {
+		fmt.Printf("Found: %s -> %s\n", found.Name, found.Endpoint)
+	} else {
+		fmt.Println("Not found")
+		found = &CustomEndpoint{"Maestro", config.MaestroURL}
+	}
+
+	webSocketURL := found.Endpoint
 	// Assuming GraphQLPingIntervalSeconds is guaranteed to be non-nil due to defaulting in configuration.go
 	pingIntervalSeconds := *config.GraphQLPingIntervalSeconds
 	pingIntervalDuration := time.Duration(pingIntervalSeconds) * time.Second
 
 	if webSocketURL == "" {
 		h.API.LogDebug("DEBUG: processMaestroTask returning error because webSocketURL is empty")
-		h.API.LogError("GraphQL Agent WebSocket URL is not configured.", "user_id", userID, "task_name", taskName)
+		h.API.LogError("GraphQL Agent WebSocket URL is not configured.", "user_id", userID, "task_name", agentName)
 		errorPost := &model.Post{
 			ChannelId: channelID,
 			Message:   "The GraphQL Agent WebSocket URL is not configured. Please contact an administrator.",
@@ -190,10 +217,10 @@ func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, ch
 	appCtx, _ := context.WithCancel(context.Background())
 
 	// Start the GraphQL agent function in a goroutine
-	go h.CallGraphQLAgentFunc(appCtx, "apiKey", graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, fetchedMessages, webSocketURL, pingIntervalDuration, messageChan, errorChan)
+	go h.CallGraphQLAgentFunc(appCtx, found.Name, graphQLConversationID, userID, graphQLTenantID, graphQLSystemChannelID, fetchedMessages, webSocketURL, pingIntervalDuration, messageChan, errorChan)
 
 	// Process messages continuously
-	go h.processIncomingMessages(messageChan, errorChan, channelID, threadRootID, userID, taskName)
+	go h.processIncomingMessages(messageChan, errorChan, channelID, threadRootID, userID, agentName)
 
 	return nil
 }
