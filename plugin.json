@@ -36,7 +36,6 @@
                 "display_name": "Custom Endpoints",
                 "type": "custom",
                 "help_text": "A JSON array of objects, where each object has 'Name' (string) and 'Endpoint' (string) properties. Example: [{\"Name\":\"My Service\",\"Endpoint\":\"http://localhost:1234/api\"}]",
-                "custom_component": "CustomEndpointsComponent",
                 "secret": false
             }
         ]
