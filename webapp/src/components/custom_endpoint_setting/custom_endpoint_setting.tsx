@@ -1,4 +1,7 @@
-import React, { useState, useEffect } from 'react';
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See LICENSE.txt for license information.
+
+import React, {useState, useEffect} from 'react';
 
 interface Endpoint {
     Name: string;
@@ -41,28 +44,31 @@ const CustomEndpointSetting: React.FC<CustomEndpointSettingProps> = ({
             }
             onError?.(null); // Clear error on successful parse or empty value
         } catch (error) {
-            console.error("Error parsing CustomEndpoints JSON:", error);
+            // console.error('Error parsing CustomEndpoints JSON:', error);
             setEndpoints([]);
             onError?.('Invalid JSON format.');
         }
     }, [value, onError]);
 
     const handleAddEndpoint = () => {
-        setEndpoints([...endpoints, { Name: '', Endpoint: '' }]);
+        setEndpoints([...endpoints, {Name: '', Endpoint: ''}]);
+
         // onChange will be called by the effect below
     };
 
     const handleRemoveEndpoint = (index: number) => {
         const newEndpoints = endpoints.filter((_, i) => i !== index);
         setEndpoints(newEndpoints);
+
         // onChange will be called by the effect below
     };
 
     const handleChangeEndpoint = (index: number, field: keyof Endpoint, fieldValue: string) => {
         const newEndpoints = endpoints.map((ep, i) =>
-            i === index ? { ...ep, [field]: fieldValue } : ep
+            (i === index ? ({...ep, [field]: fieldValue}) : ep), // Added parentheses for no-confusing-arrow
         );
         setEndpoints(newEndpoints);
+
         // onChange will be called by the effect below
     };
 
@@ -73,15 +79,15 @@ const CustomEndpointSetting: React.FC<CustomEndpointSettingProps> = ({
             onChange(id, jsonValue);
             onError?.(null); // Clear error on successful update
         } catch (error) {
-             console.error("Error stringifying CustomEndpoints JSON:", error);
-             // Potentially inform Mattermost of this error if a mechanism exists beyond console
-             onError?.('Error preparing data for save.');
+            // console.error('Error stringifying CustomEndpoints JSON:', error);
+            // Potentially inform Mattermost of this error if a mechanism exists beyond console
+            onError?.('Error preparing data for save.');
         }
     }, [endpoints, id, onChange, onError]);
 
     // Basic styling (inline for now, can be moved to CSS modules or SCSS later)
     const styles = {
-        container: { marginBottom: '10px' },
+        container: {marginBottom: '10px'},
         endpointItem: {
             border: '1px solid #ddd',
             padding: '10px',
@@ -106,39 +112,46 @@ const CustomEndpointSetting: React.FC<CustomEndpointSettingProps> = ({
             marginRight: '5px',
         },
         removeButton: {
-             backgroundColor: '#dc3545',
-        }
+            backgroundColor: '#dc3545',
+        },
     };
 
     return (
         <div>
             {endpoints.map((endpoint, index) => (
-                <div key={index} style={styles.endpointItem}>
+                <div
+                    key={index}
+                    style={styles.endpointItem}
+                >
                     <input
-                        type="text"
-                        placeholder="Name"
+                        type='text'
+                        placeholder='Name'
                         value={endpoint.Name}
                         onChange={(e) => handleChangeEndpoint(index, 'Name', e.target.value)}
                         style={styles.input}
                     />
                     <input
-                        type="text"
-                        placeholder="Endpoint URL"
+                        type='text'
+                        placeholder='Endpoint URL'
                         value={endpoint.Endpoint}
                         onChange={(e) => handleChangeEndpoint(index, 'Endpoint', e.target.value)}
                         style={styles.input}
                     />
                     <button
-                        type="button"
+                        type='button'
                         onClick={() => handleRemoveEndpoint(index)}
                         style={{...styles.button, ...styles.removeButton}}
                     >
-                        Remove
+                        {'Remove'}
                     </button>
                 </div>
             ))}
-            <button type="button" onClick={handleAddEndpoint} style={styles.button}>
-                Add Endpoint
+            <button
+                type='button'
+                onClick={handleAddEndpoint}
+                style={styles.button}
+            >
+                {'Add Endpoint'}
             </button>
         </div>
     );

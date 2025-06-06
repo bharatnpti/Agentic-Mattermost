@@ -159,7 +159,7 @@ func (h *MaestroHandler) processMaestroTask(taskName string, numMessages int, ch
 	graphQLSystemChannelID := "ONEAPPWEB"
 
 	config := h.GetConfig()
-	webSocketURL := config.GraphQLAgentWebSocketURL
+	webSocketURL := config.MaestroURL
 	// Assuming GraphQLPingIntervalSeconds is guaranteed to be non-nil due to defaulting in configuration.go
 	pingIntervalSeconds := *config.GraphQLPingIntervalSeconds
 	pingIntervalDuration := time.Duration(pingIntervalSeconds) * time.Second
