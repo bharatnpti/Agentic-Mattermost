@@ -17,9 +17,14 @@ import (
 //
 // If you add non-reference types to your configuration struct, be sure to rewrite Clone as a deep
 // copy appropriate for your types.
+type CustomEndpoint struct {
+	Name     string
+	Endpoint string
+}
+
 type configuration struct {
-	OpenAIAPIKey             string
-	GraphQLAgentWebSocketURL string // New field
+	MaestroURL                 string // Renamed from GraphQLAgentWebSocketURL
+	CustomEndpoints            []CustomEndpoint
 	GraphQLPingIntervalSeconds *int `json:"GraphQLPingIntervalSeconds"`
 }
 

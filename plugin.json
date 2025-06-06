@@ -23,21 +23,21 @@
         "footer": "",
         "settings": [
             {
-                "key": "OpenAIAPIKey",
-                "display_name": "OpenAI API Key",
+                "key": "MaestroURL",
+                "display_name": "Maestro URL",
                 "type": "text",
-                "help_text": "The API key for OpenAI, required for the plugin to function.",
-                "placeholder": "",
-                "default": "",
-                "secret": true
-            },
-            {
-                "key": "GraphQLAgentWebSocketURL",
-                "display_name": "GraphQL Agent WebSocket URL",
-                "type": "text",
-                "help_text": "The WebSocket URL for the GraphQL agent (e.g., ws://localhost:8080/subscriptions). This is required for the !maestro commands to connect to the agent.",
+                "help_text": "The WebSocket URL for the Maestro service (e.g., ws://localhost:8080/subscriptions). This is required for the !maestro commands to connect to the agent.",
                 "placeholder": "ws://example.com/subscriptions",
                 "default": "",
+                "secret": false
+            },
+            {
+                "key": "CustomEndpoints",
+                "display_name": "Custom Endpoints",
+                "type": "longtext",
+                "help_text": "A JSON array of objects, where each object has 'Name' (string) and 'Endpoint' (string) properties. Example: [{\"Name\":\"My Service\",\"Endpoint\":\"http://localhost:1234/api\"}]",
+                "placeholder": "[{\"Name\":\"My Service\",\"Endpoint\":\"http://localhost:1234/api\"}]",
+                "default": [],
                 "secret": false
             }
         ]

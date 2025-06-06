@@ -14,8 +14,10 @@ import (
 
 func TestConfigurationClone(t *testing.T) {
 	original := &configuration{
-		OpenAIAPIKey:             "key1",
-		GraphQLAgentWebSocketURL: "ws://url1",
+		MaestroURL: "ws://url1",
+		CustomEndpoints: []CustomEndpoint{
+			{Name: "ep1", Endpoint: "http://localhost:8001"},
+		},
 	}
 
 	clone := original.Clone()
@@ -24,13 +26,15 @@ func TestConfigurationClone(t *testing.T) {
 	assert.Equal(t, original, clone, "Clone should have the same values.")
 
 	// Modify the clone
-	clone.OpenAIAPIKey = "key2"
-	clone.GraphQLAgentWebSocketURL = "ws://url2"
+	clone.MaestroURL = "ws://url2"
+	clone.CustomEndpoints = []CustomEndpoint{
+		{Name: "ep2", Endpoint: "http://localhost:8002"},
+	}
 
-	assert.NotEqual(t, original.OpenAIAPIKey, clone.OpenAIAPIKey, "Original should not be affected by clone modification.")
-	assert.NotEqual(t, original.GraphQLAgentWebSocketURL, clone.GraphQLAgentWebSocketURL, "Original should not be affected by clone modification.")
-	assert.Equal(t, "key1", original.OpenAIAPIKey, "Original key should remain unchanged.")
-	assert.Equal(t, "ws://url1", original.GraphQLAgentWebSocketURL, "Original URL should remain unchanged.")
+	assert.NotEqual(t, original.MaestroURL, clone.MaestroURL, "Original should not be affected by clone modification.")
+	assert.NotEqual(t, original.CustomEndpoints, clone.CustomEndpoints, "Original should not be affected by clone modification.")
+	assert.Equal(t, "ws://url1", original.MaestroURL, "Original URL should remain unchanged.")
+	assert.Equal(t, "ep1", original.CustomEndpoints[0].Name, "Original CustomEndpoints should remain unchanged.")
 }
 
 func TestGetSetConfiguration(t *testing.T) {
@@ -41,20 +45,24 @@ func TestGetSetConfiguration(t *testing.T) {
 	t.Run("get initial nil configuration", func(t *testing.T) {
 		cfg := p.getConfiguration()
 		require.NotNil(t, cfg, "getConfiguration should return a non-nil configuration even if not set.")
-		assert.Empty(t, cfg.OpenAIAPIKey, "Initial config should be empty.")
-		assert.Empty(t, cfg.GraphQLAgentWebSocketURL, "Initial config should be empty.")
+		assert.Empty(t, cfg.MaestroURL, "Initial config should be empty.")
+		assert.Empty(t, cfg.CustomEndpoints, "Initial config should be empty.")
 	})
 
 	t.Run("set and get configuration", func(t *testing.T) {
 		newCfg := &configuration{
-			OpenAIAPIKey:             "newKey",
-			GraphQLAgentWebSocketURL: "ws://newurl",
+			MaestroURL: "ws://newurl",
+			CustomEndpoints: []CustomEndpoint{
+				{Name: "ep1", Endpoint: "http://localhost:8001"},
+			},
 		}
 		p.setConfiguration(newCfg)
 
 		retrievedCfg := p.getConfiguration()
 		assert.Equal(t, newCfg, retrievedCfg, "Retrieved configuration should match the set one.")
-		assert.Equal(t, "newKey", retrievedCfg.OpenAIAPIKey)
+		assert.Equal(t, "ws://newurl", retrievedCfg.MaestroURL)
+		require.Len(t, retrievedCfg.CustomEndpoints, 1)
+		assert.Equal(t, "ep1", retrievedCfg.CustomEndpoints[0].Name)
 		// getConfiguration returns the direct pointer, not a clone.
 		assert.Same(t, newCfg, retrievedCfg, "getConfiguration should return the same pointer that was set.")
 
@@ -65,7 +73,7 @@ func TestGetSetConfiguration(t *testing.T) {
 	})
 
 	t.Run("setConfiguration with existing configuration panics", func(t *testing.T) {
-		cfgToSet := &configuration{OpenAIAPIKey: "panicKey"}
+		cfgToSet := &configuration{MaestroURL: "panicURL"}
 		p.setConfiguration(cfgToSet) // Set it once
 
 		// Calling with the exact same pointer should panic
@@ -75,11 +83,11 @@ func TestGetSetConfiguration(t *testing.T) {
 	})
 
 	t.Run("setConfiguration with empty struct does not panic", func(t *testing.T) {
-		emptyCfg := &configuration{}
+		emptyCfg := &configuration{} // This struct has fields, so it's not truly "empty" in terms of NumField.
 		p.setConfiguration(emptyCfg) // Set it once
 
-		// Second call with the same empty struct pointer *will* panic because NumField > 0
-		// The comment in setConfiguration about NumField == 0 is misleading for this struct.
+		// Second call with the same empty struct pointer *will* panic because NumField > 0.
+		// The check `reflect.ValueOf(*configuration).NumField() == 0` is for a struct with no fields at all.
 		assert.PanicsWithValue(t, "setConfiguration called with the existing configuration", func() {
 			p.setConfiguration(emptyCfg)
 		}, "Calling setConfiguration with the same non-empty field struct pointer should panic.")
@@ -89,8 +97,8 @@ func TestGetSetConfiguration(t *testing.T) {
 		p.setConfiguration(nil)
 		cfg := p.getConfiguration()
 		require.NotNil(t, cfg, "getConfiguration should return a non-nil configuration.")
-		assert.Empty(t, cfg.OpenAIAPIKey)
-		assert.Empty(t, cfg.GraphQLAgentWebSocketURL)
+		assert.Empty(t, cfg.MaestroURL)
+		assert.Empty(t, cfg.CustomEndpoints)
 	})
 }
 
@@ -117,18 +125,19 @@ func TestOnConfigurationChange(t *testing.T) {
 		// Let's assume the plugin has p.API field that can be set for testing.
 		p.API = api
 
-
-		expectedCfg := &configuration{
-			OpenAIAPIKey:             "loadedKey",
-			GraphQLAgentWebSocketURL: "ws://loadedURL",
+		loadedMaestroURL := "ws://loadedURL"
+		loadedCustomEndpoints := []CustomEndpoint{
+			{Name: "service1", Endpoint: "http://service1.example.com"},
+			{Name: "service2", Endpoint: "http://service2.example.com"},
 		}
 
 		// Mock LoadPluginConfiguration
+		// This simulates Mattermost successfully loading the configuration, including CustomEndpoints
 		api.On("LoadPluginConfiguration", mock.AnythingOfType("*main.configuration")).Run(func(args mock.Arguments) {
 			cfgPtr := args.Get(0).(*configuration)
-			*cfgPtr = *expectedCfg
-			// Note: GraphQLPingIntervalSeconds is deliberately NOT set in expectedCfg
-			// to simulate it being missing from the loaded configuration, thereby triggering the default.
+			cfgPtr.MaestroURL = loadedMaestroURL
+			cfgPtr.CustomEndpoints = loadedCustomEndpoints
+			// GraphQLPingIntervalSeconds is deliberately not set here to test default handling.
 		}).Return(nil).Once()
 
 		// Expect LogInfo to be called because GraphQLPingIntervalSeconds is missing
@@ -138,8 +147,8 @@ func TestOnConfigurationChange(t *testing.T) {
 		assert.NoError(t, err)
 
 		retrievedCfg := p.getConfiguration()
-		assert.Equal(t, expectedCfg.OpenAIAPIKey, retrievedCfg.OpenAIAPIKey)
-		assert.Equal(t, expectedCfg.GraphQLAgentWebSocketURL, retrievedCfg.GraphQLAgentWebSocketURL)
+		assert.Equal(t, loadedMaestroURL, retrievedCfg.MaestroURL)
+		assert.Equal(t, loadedCustomEndpoints, retrievedCfg.CustomEndpoints)
 
 		// Assert that the default value for GraphQLPingIntervalSeconds was applied
 		expectedDefaultPingInterval := 30
@@ -151,12 +160,48 @@ func TestOnConfigurationChange(t *testing.T) {
 		api.AssertExpectations(t)
 	})
 
+	t.Run("successful configuration change with empty CustomEndpoints", func(t *testing.T) {
+		api := &plugintest.API{}
+		p.API = api
+
+		loadedMaestroURL := "ws://loadedURLForEmptyCE"
+		// Simulate CustomEndpoints being explicitly empty in the config, or default: [] from plugin.json
+		loadedCustomEndpoints := []CustomEndpoint{}
+
+		api.On("LoadPluginConfiguration", mock.AnythingOfType("*main.configuration")).Run(func(args mock.Arguments) {
+			cfgPtr := args.Get(0).(*configuration)
+			cfgPtr.MaestroURL = loadedMaestroURL
+			cfgPtr.CustomEndpoints = loadedCustomEndpoints
+			// GraphQLPingIntervalSeconds is set to a valid value this time
+			validPingInterval := 15
+			cfgPtr.GraphQLPingIntervalSeconds = &validPingInterval
+		}).Return(nil).Once()
+
+		// No LogInfo expected for GraphQLPingIntervalSeconds as it's provided
+		err := p.OnConfigurationChange()
+		assert.NoError(t, err)
+
+		retrievedCfg := p.getConfiguration()
+		assert.Equal(t, loadedMaestroURL, retrievedCfg.MaestroURL)
+		assert.NotNil(t, retrievedCfg.CustomEndpoints, "CustomEndpoints should be an empty slice, not nil")
+		assert.Len(t, retrievedCfg.CustomEndpoints, 0, "CustomEndpoints should be empty")
+
+		require.NotNil(t, retrievedCfg.GraphQLPingIntervalSeconds)
+		assert.Equal(t, 15, *retrievedCfg.GraphQLPingIntervalSeconds)
+
+
+		api.AssertExpectations(t)
+	})
+
 	t.Run("failed configuration load", func(t *testing.T) {
 		api := &plugintest.API{}
 		p.API = api // Ensure plugin uses the mock API
 
 		// Keep the old configuration to check it doesn't change on load failure
-		oldCfg := &configuration{OpenAIAPIKey: "oldKey", GraphQLAgentWebSocketURL: "ws://oldURL"}
+		oldCfg := &configuration{
+			MaestroURL: "ws://oldURL",
+			CustomEndpoints: []CustomEndpoint{{Name: "old", Endpoint: "http://old.co"}},
+		}
 		p.setConfiguration(oldCfg)
 
 		expectedError := errors.New("load configuration error") // Using errors.New from "github.com/pkg/errors"
@@ -167,11 +212,6 @@ func TestOnConfigurationChange(t *testing.T) {
 		// Check if the cause of the error is expectedError
 		assert.Equal(t, expectedError, errors.Cause(err), "The cause of the error should be the one from LoadPluginConfiguration.")
 
-		// Configuration should remain the old one or be empty if setConfiguration(new(configuration)) was called internally before error
-		// Based on current OnConfigurationChange, p.setConfiguration is called only on success.
-		// However, the `configuration` variable in OnConfigurationChange is local.
-		// If LoadPluginConfiguration fails, p.setConfiguration is NOT called with the new (empty) config.
-		// So, the existing p.configuration should remain.
 		retrievedCfg := p.getConfiguration()
 		assert.Equal(t, oldCfg, retrievedCfg, "Configuration should not have changed on load error.")
 		api.AssertExpectations(t)
