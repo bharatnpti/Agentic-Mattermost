@@ -229,6 +229,15 @@ func TestGraphQLClient_SuccessfulSubscriptionAndMultipleMessages(t *testing.T) {
 		require.True(t, isSubscribe, fmt.Sprintf("mockServer: expected 'start' or 'subscribe', got '%s'", msgType))
 		log.Printf("mockServer: received subscription request with ID: %s, Type: %s", subID, msgType)
 
+		payloadMap, ok := subMsg["payload"].(map[string]interface{})
+		require.True(t, ok, "mockServer: payload is not a map[string]interface{}")
+		actualQuery, ok := payloadMap["query"].(string)
+		require.True(t, ok, "mockServer: query is not a string in payload")
+		// The agentName used in the test TestGraphQLClient_SuccessfulSubscriptionAndMultipleMessages is "test-api-key"
+		// The escapeString function in graphql_service.go will escape special characters, but "test-api-key" has none.
+		expectedAgentNameSubstring := `agentName: "test-api-key"`
+		require.Contains(t, actualQuery, expectedAgentNameSubstring, "mockServer: query does not contain expected agentName")
+
 		// 2. Send multiple mock AgentResponse payloads
 		payloads := []AgentResponse{
 			{ // Payload 1

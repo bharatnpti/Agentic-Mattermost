@@ -271,7 +271,7 @@ var CallGraphQLAgentFunc = func(parentCtx context.Context, agentName string, con
 	messageBlock := messageBlockBuffer.String()
 
 	query := fmt.Sprintf(`subscription {
-		agent(request: {
+		agent(agentName: "%s", request: {
 			conversationContext: {
 				conversationId: "%s"
 			},
@@ -288,7 +288,7 @@ var CallGraphQLAgentFunc = func(parentCtx context.Context, agentName string, con
 			anonymizationEntities { replacement, type, value },
 			messages { content, format, role, turnId }
 		}
-	}`, escapeString(conversationID), escapeString(channelIDSystemContext), escapeString(tenantID), escapeString(userID), messageBlock)
+	}`, escapeString(agentName), escapeString(conversationID), escapeString(channelIDSystemContext), escapeString(tenantID), escapeString(userID), messageBlock)
 
 	log.Printf("[CallGraphQLAgentFunc] GraphQL Query: %s", query)
 
