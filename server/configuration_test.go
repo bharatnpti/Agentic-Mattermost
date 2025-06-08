@@ -6,6 +6,7 @@ import (
 
 	// "github.com/mattermost/mattermost/server/public/model" // Not directly used
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
+	"encoding/json"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock" // For mock.AnythingOfType
 	"github.com/stretchr/testify/require"
@@ -215,5 +216,115 @@ func TestOnConfigurationChange(t *testing.T) {
 		retrievedCfg := p.getConfiguration()
 		assert.Equal(t, oldCfg, retrievedCfg, "Configuration should not have changed on load error.")
 		api.AssertExpectations(t)
+	})
+
+	t.Run("loads CustomEndpoints with AgentType", func(t *testing.T) {
+		plugin := &Plugin{}
+		apiMock := &plugintest.API{}
+
+		configWithAgentType := map[string]interface{}{
+			"CustomEndpoints": []map[string]interface{}{
+				{
+					"Name":      "Test1",
+					"Endpoint":  "http://test1.com",
+					"AgentType": "TypeA",
+				},
+			},
+			// Ensure GraphQLPingIntervalSeconds is also handled, e.g., by defaulting
+		}
+		configBytes, _ := json.Marshal(configWithAgentType)
+
+		apiMock.On("LoadPluginConfiguration", mock.AnythingOfType("*main.configuration")).Run(func(args mock.Arguments) {
+			cfg := args.Get(0).(*configuration)
+			json.Unmarshal(configBytes, cfg)
+		}).Return(nil)
+		// Expect LogInfo if GraphQLPingIntervalSeconds is not in configWithAgentType and defaults
+		apiMock.On("LogInfo", "GraphQLPingIntervalSeconds not configured or invalid, defaulting to 30 seconds.").Return().Maybe()
+
+
+		plugin.SetAPI(apiMock)
+		err := plugin.OnConfigurationChange()
+
+		assert.NoError(t, err)
+		loadedConfig := plugin.getConfiguration()
+		assert.NotNil(t, loadedConfig)
+		require.Len(t, loadedConfig.CustomEndpoints, 1)
+		assert.Equal(t, "Test1", loadedConfig.CustomEndpoints[0].Name)
+		assert.Equal(t, "http://test1.com", loadedConfig.CustomEndpoints[0].Endpoint)
+		assert.Equal(t, "TypeA", loadedConfig.CustomEndpoints[0].AgentType)
+		assert.NotNil(t, loadedConfig.GraphQLPingIntervalSeconds, "GraphQLPingIntervalSeconds should have been defaulted")
+		if loadedConfig.GraphQLPingIntervalSeconds != nil {
+			assert.Equal(t, 30, *loadedConfig.GraphQLPingIntervalSeconds, "Default GraphQLPingIntervalSeconds should be 30")
+		}
+		apiMock.AssertExpectations(t)
+	})
+
+	t.Run("loads CustomEndpoints without AgentType (backwards compatibility)", func(t *testing.T) {
+		plugin := &Plugin{}
+		apiMock := &plugintest.API{}
+
+		configWithoutAgentType := map[string]interface{}{
+			"CustomEndpoints": []map[string]interface{}{
+				{
+					"Name":     "Test2",
+					"Endpoint": "http://test2.com",
+					// AgentType is missing
+				},
+			},
+			// Explicitly set GraphQLPingIntervalSeconds to avoid LogInfo call for it
+			"GraphQLPingIntervalSeconds": 15,
+		}
+		configBytes, _ := json.Marshal(configWithoutAgentType)
+
+		apiMock.On("LoadPluginConfiguration", mock.AnythingOfType("*main.configuration")).Run(func(args mock.Arguments) {
+			cfg := args.Get(0).(*configuration)
+			json.Unmarshal(configBytes, cfg)
+		}).Return(nil)
+		// No LogInfo expected for GraphQLPingIntervalSeconds as it's provided
+
+		plugin.SetAPI(apiMock)
+		err := plugin.OnConfigurationChange()
+
+		assert.NoError(t, err)
+		loadedConfig := plugin.getConfiguration()
+		assert.NotNil(t, loadedConfig)
+		require.Len(t, loadedConfig.CustomEndpoints, 1)
+		assert.Equal(t, "Test2", loadedConfig.CustomEndpoints[0].Name)
+		assert.Equal(t, "http://test2.com", loadedConfig.CustomEndpoints[0].Endpoint)
+		assert.Equal(t, "", loadedConfig.CustomEndpoints[0].AgentType) // Verify AgentType defaults to empty string
+		assert.NotNil(t, loadedConfig.GraphQLPingIntervalSeconds)
+		if loadedConfig.GraphQLPingIntervalSeconds != nil {
+			assert.Equal(t, 15, *loadedConfig.GraphQLPingIntervalSeconds)
+		}
+		apiMock.AssertExpectations(t)
+	})
+
+	// This test case is similar to the first one in the original TestOnConfigurationChange,
+	// specifically testing the default for GraphQLPingIntervalSeconds.
+	// It's good to have it explicitly.
+	t.Run("sets default GraphQLPingIntervalSeconds if not provided in config", func(t *testing.T) {
+		plugin := &Plugin{}
+		apiMock := &plugintest.API{}
+
+		emptyConfig := map[string]interface{}{} // Empty config, so GraphQLPingIntervalSeconds is missing
+		configBytes, _ := json.Marshal(emptyConfig)
+
+		apiMock.On("LoadPluginConfiguration", mock.AnythingOfType("*main.configuration")).Run(func(args mock.Arguments) {
+			cfg := args.Get(0).(*configuration)
+			json.Unmarshal(configBytes, cfg)
+		}).Return(nil)
+		apiMock.On("LogInfo", "GraphQLPingIntervalSeconds not configured or invalid, defaulting to 30 seconds.").Return().Once()
+
+		plugin.SetAPI(apiMock)
+		err := plugin.OnConfigurationChange()
+
+		assert.NoError(t, err)
+		loadedConfig := plugin.getConfiguration()
+		assert.NotNil(t, loadedConfig)
+		assert.NotNil(t, loadedConfig.GraphQLPingIntervalSeconds)
+		if loadedConfig.GraphQLPingIntervalSeconds != nil {
+			assert.Equal(t, 30, *loadedConfig.GraphQLPingIntervalSeconds) // Default value
+		}
+		apiMock.AssertExpectations(t)
 	})
 }

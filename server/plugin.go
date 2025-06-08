@@ -48,6 +48,11 @@ type Plugin struct {
 	router *mux.Router
 }
 
+// SetAPI allows to set the API for testing purposes
+func (p *Plugin) SetAPI(api plugin.API) {
+	p.API = api
+}
+
 // OnActivate is invoked when the plugin is activated. If an error is returned, the plugin will be deactivated.
 func (p *Plugin) OnActivate() error {
 	p.client = pluginapi.NewClient(p.API, p.Driver)

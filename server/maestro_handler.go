@@ -183,7 +183,7 @@ func (h *MaestroHandler) processMaestroTask(agentName string, numMessages int, c
 		fmt.Printf("Found: %s -> %s\n", found.Name, found.Endpoint)
 	} else {
 		fmt.Println("Not found")
-		found = &CustomEndpoint{"Maestro", config.MaestroURL}
+		found = &CustomEndpoint{"Maestro", config.MaestroURL, ""} // Added empty string for AgentType
 	}
 
 	webSocketURL := found.Endpoint

@@ -35,7 +35,7 @@
                 "key": "CustomEndpoints",
                 "display_name": "Custom Endpoints",
                 "type": "custom",
-                "help_text": "A JSON array of objects, where each object has 'Name' (string) and 'Endpoint' (string) properties.",
+                "help_text": "A JSON array of objects, where each object has 'Name' (string), 'Endpoint' (string), and 'AgentType' (string) properties.",
                 "placeholder": "json",
                 "default": [],
                 "secret": false

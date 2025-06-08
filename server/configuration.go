@@ -20,6 +20,7 @@ import (
 type CustomEndpoint struct {
 	Name     string
 	Endpoint string
+	AgentType string
 }
 
 type configuration struct {

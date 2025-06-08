@@ -6,6 +6,7 @@ import React, {useState, useEffect} from 'react';
 interface CustomEndpoint {
     Name: string;
     Endpoint: string;
+    AgentType: string;
 }
 
 interface CustomEndpointSettingProps {
@@ -34,7 +35,7 @@ const CustomEndpointSetting: React.FC<CustomEndpointSettingProps> = ({
         try {
             if (Array.isArray(value)) {
                 const validEndpoints = value.filter((ep) =>
-                    ep && typeof ep === 'object' && 'Name' in ep && 'Endpoint' in ep,
+                    ep && typeof ep === 'object' && 'Name' in ep && 'Endpoint' in ep && 'AgentType' in ep,
                 );
                 setEndpoints(validEndpoints);
 
@@ -61,7 +62,7 @@ const CustomEndpointSetting: React.FC<CustomEndpointSettingProps> = ({
         if (disabled) {
             return;
         }
-        const newEndpoints = [...endpoints, {Name: '', Endpoint: ''}];
+        const newEndpoints = [...endpoints, {Name: '', Endpoint: '', AgentType: ''}];
         setEndpoints(newEndpoints);
         onChange(id, newEndpoints);
     };
@@ -221,6 +222,14 @@ const CustomEndpointSetting: React.FC<CustomEndpointSettingProps> = ({
                                 placeholder='Endpoint URL (e.g., ws://weather:8080.com)'
                                 value={endpoint.Endpoint}
                                 onChange={(e) => handleChangeEndpoint(index, 'Endpoint', e.target.value)}
+                                style={styles.input}
+                                disabled={disabled}
+                            />
+                            <input
+                                type='text'
+                                placeholder='Agent Type (e.g., OpenAI)'
+                                value={endpoint.AgentType}
+                                onChange={(e) => handleChangeEndpoint(index, 'AgentType', e.target.value)}
                                 style={styles.input}
                                 disabled={disabled}
                             />
