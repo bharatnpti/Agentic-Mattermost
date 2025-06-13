@@ -45,19 +45,21 @@ public class MeetingSchedulerWorkflowTest {
     private Worker worker;
     private String taskQueue;
 
+    private TestWorkflowEnvironment testEnv;
+
 
     @BeforeEach
     public void setUp(TestWorkflowEnvironment testEnv) {
         // testEnv is injected by TestWorkflowExtension if not using setDoNotStart(true)
         // If using setDoNotStart(true), testEnv needs to be obtained from the extension.
-        // TestWorkflowEnvironment testEnv = testWorkflowExtension.getTestEnvironment();
+        // TestWorkflowEnvironment testEnv = testEnv;
 
         taskQueue = "Test-" + UUID.randomUUID().toString();
 
         mockAskUserActivity = mock(AskUserActivity.class);
         mockValidateInputActivity = mock(ValidateInputActivity.class);
 
-        worker = testWorkflowExtension.getWorker(taskQueue);
+        worker = testEnv.getWorkerFactory().getWorker(taskQueue);
         worker.registerActivitiesImplementations(mockAskUserActivity, mockValidateInputActivity);
 
         // Configure activity options for mocks if needed, though direct mock control is often enough
@@ -67,13 +69,15 @@ public class MeetingSchedulerWorkflowTest {
         // This step is tricky with mocks if they are not registered via an instance but class.
         // We are using instances here, so it's fine.
 
-        testWorkflowExtension.getTestEnvironment().start(); // Start the test environment worker factory
-        workflowClient = testWorkflowExtension.getWorkflowClient();
+        testEnv.start(); // Start the test environment worker factory
+
+        this.testEnv = testEnv;
+        workflowClient = testEnv.getWorkflowClient();
     }
 
     @AfterEach
     public void tearDown() {
-        testWorkflowExtension.getTestEnvironment().close();
+        testEnv.close();
     }
 
     private Goal loadGoalFromJson(String resourceName) throws Exception {
@@ -129,11 +133,11 @@ public class MeetingSchedulerWorkflowTest {
 
         // Send signals based on the order defined by dependencies in test-goal-simple.json
         // Action 1: "get_details"
-        testWorkflowExtension.getWorkflowClient().newWorkflowStub(MeetingSchedulerWorkflow.class, execution.getWorkflowId())
+        testEnv.getWorkflowClient().newWorkflowStub(MeetingSchedulerWorkflow.class, execution.getWorkflowId())
             .onUserResponse("get_details", Map.of("topic", "Test Meeting", "datetime", "Tomorrow", "duration", "1hr"));
 
         // Action 2: "send_invite" (depends on get_details)
-        testWorkflowExtension.getWorkflowClient().newWorkflowStub(MeetingSchedulerWorkflow.class, execution.getWorkflowId())
+        testEnv.getWorkflowClient().newWorkflowStub(MeetingSchedulerWorkflow.class, execution.getWorkflowId())
             .onUserResponse("send_invite", Map.of("status", "Invite sent"));
 
 
@@ -152,7 +156,7 @@ public class MeetingSchedulerWorkflowTest {
         assertTrue(promptCaptor.getAllValues().get(0).contains("your preferred topic"));
 
         // More assertions can be added here, e.g. checking final action statuses if query methods were available.
-        assertEquals(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_COMPLETED, testWorkflowExtension.getTestEnvironment().describeWorkflowExecution(execution).getWorkflowExecutionInfo().getStatus());
+        assertEquals(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_COMPLETED, testEnv.describeWorkflowExecution(execution).getWorkflowExecutionInfo().getStatus());
     }
 
     @Test
@@ -192,7 +196,7 @@ public class MeetingSchedulerWorkflowTest {
 
         verify(mockAskUserActivity, times(2)).ask(eq(singleAction.getActionId()), anyString());
         verify(mockValidateInputActivity, times(2)).validate(eq(singleAction.getActionId()), anyMap(), anyMap());
-        assertEquals(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_COMPLETED, testWorkflowExtension.getTestEnvironment().describeWorkflowExecution(WorkflowStub.fromTyped(workflow).getExecution()).getWorkflowExecutionInfo().getStatus());
+        assertEquals(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_COMPLETED, testEnv.describeWorkflowExecution(WorkflowStub.fromTyped(workflow).getExecution()).getWorkflowExecutionInfo().getStatus());
     }
 
 
@@ -303,6 +307,6 @@ public class MeetingSchedulerWorkflowTest {
         // This highlights a potential refinement in how prompts are constructed and resolved from actionParams.
         // For now, we'll assert that the action was called.
 
-        assertEquals(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_COMPLETED, testWorkflowExtension.getTestEnvironment().describeWorkflowExecution(WorkflowStub.fromTyped(workflow).getExecution()).getWorkflowExecutionInfo().getStatus());
+        assertEquals(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_COMPLETED, testEnv.describeWorkflowExecution(WorkflowStub.fromTyped(workflow).getExecution()).getWorkflowExecutionInfo().getStatus());
     }
 }
