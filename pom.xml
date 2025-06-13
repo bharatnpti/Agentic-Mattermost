@@ -11,6 +11,7 @@
     <name>Mattermost Temporal Workflow</name>
     <modules>
         <module>engine</module>
+        <module>workflow-controller</module>
     </modules>
 
     <properties>
