@@ -1,0 +1,90 @@
+package com.example.mattermost;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import java.util.Map;
+import java.util.Objects;
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class ActionNode {
+    private String actionId;
+    private String actionName;
+    private String actionDescription;
+    private Map<String, Object> actionParams;
+    private ActionStatus actionStatus; // PENDING, COMPLETED, FAILED, WAITING_FOR_INPUT
+
+    // Constructors
+    public ActionNode() {
+        this.actionStatus = ActionStatus.PENDING;
+    }
+
+    public ActionNode(String actionId, String actionName, String actionDescription, Map<String, Object> actionParams, ActionStatus actionStatus) {
+        this.actionId = actionId;
+        this.actionName = actionName;
+        this.actionDescription = actionDescription;
+        this.actionParams = actionParams;
+        this.actionStatus = actionStatus != null ? actionStatus : ActionStatus.PENDING;
+    }
+
+    // Getters and Setters
+    public String getActionId() {
+        return actionId;
+    }
+
+    public void setActionId(String actionId) {
+        this.actionId = actionId;
+    }
+
+    public String getActionName() {
+        return actionName;
+    }
+
+    public void setActionName(String actionName) {
+        this.actionName = actionName;
+    }
+
+    public String getActionDescription() {
+        return actionDescription;
+    }
+
+    public void setActionDescription(String actionDescription) {
+        this.actionDescription = actionDescription;
+    }
+
+    public Map<String, Object> getActionParams() {
+        return actionParams;
+    }
+
+    public void setActionParams(Map<String, Object> actionParams) {
+        this.actionParams = actionParams;
+    }
+
+    public ActionStatus getActionStatus() {
+        return actionStatus;
+    }
+
+    public void setActionStatus(ActionStatus actionStatus) {
+        this.actionStatus = actionStatus;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        ActionNode that = (ActionNode) o;
+        return Objects.equals(actionId, that.actionId);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(actionId);
+    }
+
+    @Override
+    public String toString() {
+        return "ActionNode{" +
+               "actionId='" + actionId + '\'' +
+               ", actionName='" + actionName + '\'' +
+               ", actionStatus=" + actionStatus +
+               '}';
+    }
+}
