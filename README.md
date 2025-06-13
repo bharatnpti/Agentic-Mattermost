@@ -205,6 +205,79 @@ The following outlines the typical execution flow of the Mattermost Temporal wor
 
 This flow demonstrates the interplay between the application's main entry point, the Temporal worker, the workflow definition, activities, and external user interactions facilitated by signals.
 
+## Request Flow Diagram
+```plantuml
+@startuml Request Flow Diagram
+
+!theme vibrant
+title Meeting Scheduler Workflow - Request Flow Example
+
+actor User
+participant "External System\n(e.g., Mattermost Bot)" as ExternalSystem
+participant "MeetingSchedulerAppMain" as AppMain
+participant "Temporal Service" as Temporal
+participant "MeetingSchedulerWorkflowImpl" as Workflow
+activity "AskUserActivity" as AskActivity
+activity "ValidateInputActivity" as ValidateActivity
+
+skinparam sequenceMessageAlign center
+skinparam activity {
+    BackgroundColor PaleGreen
+    BorderColor Green
+}
+
+== Workflow Initiation ==
+AppMain -> Temporal: StartWorkflow(scheduleMeeting, Goal)
+Temporal -> Workflow: Execute scheduleMeeting(Goal)
+activate Workflow
+
+== Action Requiring User Input ==
+Workflow -> Workflow: Identify processable action
+Workflow -> Temporal: CallActivity(AskUserActivity.ask, actionId, prompt)
+Temporal -> AskActivity: Execute ask(actionId, prompt)
+activate AskActivity
+AskActivity -> ExternalSystem: SendPromptToUser(prompt)
+deactivate AskActivity
+ExternalSystem -> User: DisplayPrompt(prompt)
+
+== User Responds ==
+User -> ExternalSystem: SubmitInput(userInput)
+ExternalSystem -> Temporal: SignalWorkflow(onUserResponse, actionId, userInput)
+Temporal -> Workflow: DeliverSignal(onUserResponse, actionId, userInput)
+activate Workflow #LightBlue
+
+== Input Validation ==
+Workflow -> Temporal: CallActivity(ValidateInputActivity.validate, actionId, userInput, params)
+Temporal -> ValidateActivity: Execute validate(actionId, userInput, params)
+activate ValidateActivity
+ValidateActivity --> Workflow: ValidationResult(isValid)
+deactivate ValidateActivity
+
+== Processing Validation Result ==
+alt Input is Valid
+    Workflow -> Workflow: MarkActionCompleted(actionId)
+    Workflow -> Workflow: StoreOutput(actionId, userInput)
+    Workflow -> Workflow: Check if workflow complete
+else Input is Invalid
+    Workflow -> Temporal: CallActivity(AskUserActivity.ask, actionId, rePrompt)
+    Temporal -> AskActivity: Execute ask(actionId, rePrompt)
+    activate AskActivity
+    AskActivity -> ExternalSystem: SendPromptToUser(rePrompt)
+    deactivate AskActivity
+    ExternalSystem -> User: DisplayPrompt(rePrompt)
+    Workflow -> Workflow: Set action to WAITING_FOR_INPUT
+end
+deactivate Workflow
+
+== Workflow Continues or Completes ==
+Workflow -> Workflow: Process next actions or complete
+...
+Workflow -> Temporal: WorkflowExecutionCompleted
+deactivate Workflow
+
+@enduml
+```
+
 ## Areas for Further Exploration
 
 To gain a deeper understanding of the entire application or to extend its capabilities, the following areas could be explored:
