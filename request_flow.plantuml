@@ -8,8 +8,8 @@ participant "External System\n(e.g., Mattermost Bot)" as ExternalSystem
 participant "MeetingSchedulerAppMain" as AppMain
 participant "Temporal Service" as Temporal
 participant "MeetingSchedulerWorkflowImpl" as Workflow
-activity "AskUserActivity" as AskActivity
-activity "ValidateInputActivity" as ValidateActivity
+'activity "AskUserActivity" as AskActivity
+'activity "ValidateInputActivity" as ValidateActivity
 
 skinparam sequenceMessageAlign center
 skinparam activity {
