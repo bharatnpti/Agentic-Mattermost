@@ -11,11 +11,14 @@ import io.temporal.worker.Worker;
 import io.temporal.worker.WorkerFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 import java.io.InputStream;
 import java.util.Map;
 import java.util.UUID;
 
+@SpringBootApplication
 public class MeetingSchedulerAppMain {
 
     private static final Logger logger = LoggerFactory.getLogger(MeetingSchedulerAppMain.class);
@@ -24,7 +27,10 @@ public class MeetingSchedulerAppMain {
     public static final String TEMPORAL_SERVICE_ADDRESS = "127.0.0.1:7233";
 
     public static void main(String[] args) throws Exception {
+        SpringApplication.run(MeetingSchedulerAppMain.class, args);
 
+        // Existing Temporal setup code - will be moved to a Spring-managed component later
+        /*
         // 0. Setup Jackson Mapper for JSON
         ObjectMapper objectMapper = new ObjectMapper();
         objectMapper.registerModule(new JavaTimeModule());
@@ -79,6 +85,7 @@ public class MeetingSchedulerAppMain {
         // The main thread can exit, the worker threads will keep the process alive.
         // Or you can add a Thread.sleep or a condition to keep main alive for observation if needed.
         // For this example, letting main exit is fine as worker runs in daemon threads.
+        */
     }
 
     private static String loadGoalJsonFromResource(String resourceName) {
