@@ -1,0 +1,82 @@
+{
+    "goal": "Schedule a meeting with Arun and Jasbir, coordinating availability and topic",
+    "nodes": [
+        {
+            "actionId": "get_requester_preferred_details_001",
+            "actionName": "Get Requester's Meeting Details",
+            "actionDescription": "Ask the user who initiated the request for their preferred topic, day, time, and duration for the meeting.",
+            "actionParams": {
+                "required_users": ["requester"],
+                "prompt_message": "What should be the topic of the meeting, and do you have any preferred days or times and duration for the meeting with Arun and Jasbir?",
+                "required_fields": ["topic", "datetime", "duration"]
+            },
+            "actionStatus": "PENDING"
+        },
+        {
+            "actionId": "ask_arun_availability_001",
+            "actionName": "Ask Arun for Availability",
+            "actionDescription": "Send a message to Arun to inquire about his available time slots for the meeting, considering the topic from the requester.",
+            "actionParams": {
+                "recipient": "Arun",
+                "subject": "Meeting Availability Request",
+                "body": "Hi Arun, I'm trying to schedule a meeting. Could you please share your availability for a brief discussion about {get_requester_preferred_details_001.topic}?",
+                "context_for_availability": "meeting with requester and Jasbir",
+                "required_fields": ["arun_availability"]
+            },
+            "actionStatus": "PENDING"
+        },
+        {
+            "actionId": "ask_jasbir_availability_001",
+            "actionName": "Ask Jasbir for Availability",
+            "actionDescription": "Send a message to Jasbir to inquire about her available time slots for the meeting, considering the topic from the requester.",
+            "actionParams": {
+                "recipient": "Jasbir",
+                "subject": "Meeting Availability Request",
+                "body": "Hi Jasbir, I'm trying to schedule a meeting. Could you please share your availability for a brief discussion about {get_requester_preferred_details_001.topic}?",
+                "context_for_availability": "meeting with requester and Arun",
+                 "required_fields": ["jasbir_availability"]
+            },
+            "actionStatus": "PENDING"
+        },
+        {
+            "actionId": "consolidate_availabilities_001",
+            "actionName": "Consolidate All Availabilities",
+            "actionDescription": "Review and consolidate the preferred meeting details from the requester and the availability received from Arun and Jasbir to find common optimal slots.",
+            "actionParams": {
+                "required_fields": ["proposed_time"]
+            },
+            "actionStatus": "PENDING"
+        },
+        {
+            "actionId": "propose_final_time_for_approval_001",
+            "actionName": "Propose Final Meeting Time for Approval",
+            "actionDescription": "Based on consolidated availabilities, propose the most suitable meeting time and wait for final confirmation from the requester and attendees.",
+            "actionParams": {
+                "required_users": ["requester", "Arun", "Jasbir"],
+                "prompt_message": "Based on everyone's availability, I propose the following meeting time: {consolidate_availabilities_001.proposed_time}. Does this work for everyone?",
+                "required_fields": ["approved_time_final"]
+            },
+            "actionStatus": "PENDING"
+        },
+        {
+            "actionId": "send_meeting_invite_001",
+            "actionName": "Send Final Meeting Invite",
+            "actionDescription": "Create and send the official calendar invite to all attendees once the final meeting time is approved.",
+            "actionParams": {
+                "attendees": ["Arun", "Jasbir", "requester"],
+                "subject": "{get_requester_preferred_details_001.topic}",
+                "time": "{propose_final_time_for_approval_001.approved_time_final}"
+            },
+            "actionStatus": "PENDING"
+        }
+    ],
+   "relationships": [
+       { "sourceActionId": "get_requester_preferred_details_001", "targetActionId": "ask_arun_availability_001", "type": "DEPENDS_ON" },
+       { "sourceActionId": "get_requester_preferred_details_001", "targetActionId": "ask_jasbir_availability_001", "type": "DEPENDS_ON" },
+       { "sourceActionId": "ask_arun_availability_001", "targetActionId": "consolidate_availabilities_001", "type": "DEPENDS_ON" },
+       { "sourceActionId": "ask_jasbir_availability_001", "targetActionId": "consolidate_availabilities_001", "type": "DEPENDS_ON" },
+       { "sourceActionId": "get_requester_preferred_details_001", "targetActionId": "consolidate_availabilities_001", "type": "DEPENDS_ON" },
+       { "sourceActionId": "consolidate_availabilities_001", "targetActionId": "propose_final_time_for_approval_001", "type": "DEPENDS_ON" },
+       { "sourceActionId": "propose_final_time_for_approval_001", "targetActionId": "send_meeting_invite_001", "type": "DEPENDS_ON" }
+   ]
+}
