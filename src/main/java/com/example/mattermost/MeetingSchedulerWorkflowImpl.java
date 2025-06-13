@@ -48,7 +48,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
 
     @Override
     public void scheduleMeeting(Goal goal) {
-        logger.info("Workflow started for goal: {}", goal.getGoal());
+        logger.info("Workflow started for goal: {}. Initializing action statuses.", goal.getGoal());
         this.currentGoal = goal;
         // Initialize action statuses from the goal object
         goal.getNodes().forEach(node -> {
@@ -56,6 +56,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
             // Initialize outputs map for each action
             actionOutputs.put(node.getActionId(), new HashMap<>());
         });
+        logger.info("Initialized actionStatuses: {}", actionStatuses); // Log initial statuses
          // Initialize transient actionOutputs in Goal object
         if (this.currentGoal.getActionOutputs() == null) {
             this.currentGoal.setActionOutputs(new HashMap<>());
@@ -65,23 +66,33 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
         boolean progressMade;
         do {
             progressMade = false;
+            logger.info("Main loop: Checking processable actions.");
             List<ActionNode> pendingActions = getProcessableActions();
+            logger.info("Main loop: Found {} processable actions: {}", pendingActions.size(), pendingActions.stream().map(ActionNode::getActionId).collect(Collectors.toList()));
 
             if (pendingActions.isEmpty() && !isWorkflowComplete()) {
-                logger.info("No actions are currently processable. Waiting for signals or completion...");
-                Workflow.await(() -> !getProcessableActions().isEmpty() || isWorkflowComplete());
+                logger.info("Main loop: No actions currently processable. Waiting for signals or workflow completion. Current statuses: {}", actionStatuses);
+                Workflow.await(() -> {
+                    boolean newProcessableActions = !getProcessableActions().isEmpty();
+                    boolean workflowNowComplete = isWorkflowComplete();
+                    logger.info("Main loop: Workflow.await condition check: newProcessableActions={}, workflowNowComplete={}", newProcessableActions, workflowNowComplete);
+                    return newProcessableActions || workflowNowComplete;
+                });
+                logger.info("Main loop: Awakened from Workflow.await().");
                 // Re-check processable actions after await condition is met
                 pendingActions = getProcessableActions();
+                logger.info("Main loop: Re-checked processable actions after await: {}. Count: {}", pendingActions.stream().map(ActionNode::getActionId).collect(Collectors.toList()), pendingActions.size());
             }
 
             if (isWorkflowComplete()) {
-                logger.info("All actions completed. Workflow finishing.");
+                logger.info("Main loop: All actions completed. Workflow finishing.");
                 break;
             }
 
             for (ActionNode action : pendingActions) {
+                logger.info("Main loop: Evaluating action {} with status {}", action.getActionId(), actionStatuses.get(action.getActionId()));
                 if (actionStatuses.get(action.getActionId()) == ActionStatus.PENDING) {
-                    logger.info("Processing action: {}", action.getActionId());
+                    logger.info("Main loop: Processing PENDING action: {}", action.getActionId());
                     actionStatuses.put(action.getActionId(), ActionStatus.PROCESSING);
                     currentGoal.getNodeById(action.getActionId()).setActionStatus(ActionStatus.PROCESSING);
                     progressMade = true;
@@ -89,9 +100,13 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                     // For simplicity, this mock POC will assume all actions might need user input.
                     // A real implementation would check actionParams or type.
                     String prompt = generatePrompt(action);
+                    String resolvedPrompt = resolvePlaceholders(prompt, actionOutputs);
+                    logger.info("Main loop: Generated prompt for action {}: '{}'", action.getActionId(), resolvedPrompt);
 
                     try {
-                        askUserActivity.ask(action.getActionId(), resolvePlaceholders(prompt, actionOutputs));
+                        logger.info("Main loop: About to call askUserActivity.ask for action {}", action.getActionId());
+                        askUserActivity.ask(action.getActionId(), resolvedPrompt);
+                        logger.info("Main loop: askUserActivity.ask called for action {}. Setting status to WAITING_FOR_INPUT.", action.getActionId());
                         actionStatuses.put(action.getActionId(), ActionStatus.WAITING_FOR_INPUT);
                         currentGoal.getNodeById(action.getActionId()).setActionStatus(ActionStatus.WAITING_FOR_INPUT);
                         waitingForUserInputMap.put(action.getActionId(), prompt);
@@ -115,23 +130,28 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
 
     @Override
     public void onUserResponse(String actionId, Map<String, Object> userInput) {
-        logger.info("Received user response for actionId: {} with input: {}", actionId, userInput);
+        logger.info("Signal: Received onUserResponse for actionId: {} with input: {}. Current status: {}, waitingForUserInputMap containsKey: {}",
+            actionId, userInput, actionStatuses.get(actionId), waitingForUserInputMap.containsKey(actionId));
+
         if (waitingForUserInputMap.containsKey(actionId) && actionStatuses.get(actionId) == ActionStatus.WAITING_FOR_INPUT) {
             ActionNode action = currentGoal.getNodeById(actionId);
             if (action == null) {
-                logger.warn("Received response for unknown or already processed actionId: {}", actionId);
+                logger.warn("Signal: Received response for unknown or already processed actionId: {}", actionId);
                 return;
             }
 
+            logger.info("Signal: Processing valid signal for action {}.", actionId);
             actionStatuses.put(actionId, ActionStatus.PROCESSING);
             action.setActionStatus(ActionStatus.PROCESSING);
 
             boolean isValid = false;
             try {
+                logger.info("Signal: Calling validateInputActivity for action {}.", actionId);
                 // The second parameter to validateInput could be specific criteria from actionParams
                 isValid = validateInputActivity.validate(actionId, userInput, action.getActionParams());
+                logger.info("Signal: validateInputActivity returned {} for action {}.", isValid, actionId);
             } catch (Exception e) {
-                logger.error("Error calling validateInputActivity for action {}: {}", actionId, e.getMessage());
+                logger.error("Signal: Error calling validateInputActivity for action {}: {}", actionId, e.getMessage());
                 actionStatuses.put(actionId, ActionStatus.FAILED);
                 action.setActionStatus(ActionStatus.FAILED);
                 waitingForUserInputMap.remove(actionId);
@@ -152,15 +172,15 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                 logger.info("Input for action {} is invalid. Re-prompting.", actionId);
                 // Re-prompt by calling askUserActivity again
                 try {
-                    String originalPrompt = waitingForUserInputMap.get(actionId); // or generate a new one
-                    // Potentially add a message like "Your previous input was not sufficient. Please try again."
+                    String originalPrompt = waitingForUserInputMap.get(actionId);
                     String refinedPrompt = "Your previous input was not sufficient. " + originalPrompt;
-                    askUserActivity.ask(action.getActionId(), resolvePlaceholders(refinedPrompt, actionOutputs));
+                    String resolvedReprompt = resolvePlaceholders(refinedPrompt, actionOutputs);
+                    logger.info("Signal: Re-prompting for action {} with: '{}'", action.getActionId(), resolvedReprompt);
+                    askUserActivity.ask(action.getActionId(), resolvedReprompt);
                     actionStatuses.put(action.getActionId(), ActionStatus.WAITING_FOR_INPUT); // Back to waiting
                     action.setActionStatus(ActionStatus.WAITING_FOR_INPUT);
-                    // waitingForUserInputMap entry remains for the actionId
                 } catch (Exception e) {
-                    logger.error("Error re-calling askUserActivity for action {}: {}", action.getActionId(), e.getMessage());
+                    logger.error("Signal: Error re-calling askUserActivity for action {}: {}", action.getActionId(), e.getMessage());
                     actionStatuses.put(actionId, ActionStatus.FAILED);
                     action.setActionStatus(ActionStatus.FAILED);
                     waitingForUserInputMap.remove(actionId);
@@ -172,13 +192,28 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
     }
 
     private List<ActionNode> getProcessableActions() {
-        return currentGoal.getNodes().stream()
-            .filter(node -> actionStatuses.get(node.getActionId()) == ActionStatus.PENDING && dependenciesMet(node.getActionId()))
+        logger.info("getProcessableActions: Checking all nodes in currentGoal.");
+        List<ActionNode> processableNodes = currentGoal.getNodes().stream()
+            .filter(node -> {
+                ActionStatus currentStatus = actionStatuses.get(node.getActionId());
+                boolean isPending = currentStatus == ActionStatus.PENDING;
+                boolean depsMet = false;
+                if (isPending) { // Only check dependencies if it's pending
+                    depsMet = dependenciesMet(node.getActionId());
+                }
+                logger.info("getProcessableActions: Node ID: {}, Status: {}, IsPending: {}, DependenciesMet: {}",
+                    node.getActionId(), currentStatus, isPending, depsMet);
+                return isPending && depsMet;
+            })
             .collect(Collectors.toList());
+        logger.info("getProcessableActions: Returning {} processable nodes.", processableNodes.size());
+        return processableNodes;
     }
 
     private boolean dependenciesMet(String actionId) {
+        logger.info("dependenciesMet: Checking dependencies for actionId: {}", actionId);
         if (currentGoal.getRelationships() == null) {
+            logger.info("dependenciesMet: No relationships defined in goal for actionId: {}. Returning true.", actionId);
             return true; // No relationships means no dependencies
         }
         // Find all source actions that this actionId depends on
@@ -188,12 +223,22 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
             .collect(Collectors.toSet());
 
         if (sourceDependencies.isEmpty()) {
+            logger.info("dependenciesMet: No explicit dependencies found for actionId: {}. Returning true.", actionId);
             return true; // No dependencies for this action
         }
+        logger.info("dependenciesMet: ActionId: {} has source dependencies: {}", actionId, sourceDependencies);
 
         // Check if all source dependencies are COMPLETED
-        return sourceDependencies.stream()
-            .allMatch(sourceId -> actionStatuses.get(sourceId) == ActionStatus.COMPLETED);
+        boolean allDepsMet = sourceDependencies.stream()
+            .allMatch(sourceId -> {
+                ActionStatus depStatus = actionStatuses.get(sourceId);
+                boolean depCompleted = depStatus == ActionStatus.COMPLETED;
+                logger.info("dependenciesMet: ActionId: {}, Dependency: {}, Status: {}, IsCompleted: {}",
+                    actionId, sourceId, depStatus, depCompleted);
+                return depCompleted;
+            });
+        logger.info("dependenciesMet: ActionId: {}, AllDependenciesMet: {}", actionId, allDepsMet);
+        return allDepsMet;
     }
 
     private String generatePrompt(ActionNode action) {

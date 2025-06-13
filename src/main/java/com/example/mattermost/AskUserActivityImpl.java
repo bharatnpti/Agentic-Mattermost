@@ -28,7 +28,7 @@ public class AskUserActivityImpl implements AskUserActivity {
         System.out.println("SIMULATED USER PROMPT (Action ID: " + actionId + ")");
         System.out.println("Prompt: " + prompt);
         System.out.println("To respond, signal the workflow with actionId '" + actionId + "' and your input.");
-        System.out.println("e.g., using tctl: tctl workflow signal -w " + workflowId + " -n onUserResponse -i '{"" + actionId + "": {"key": "value"}}'");
+        System.out.println("e.g., using tctl: tctl workflow signal -w " + workflowId + " -n onUserResponse -i '{\"" + actionId + "\": {\"key\": \"value\"}}'");
         System.out.println("**************************************************************************************");
     }
 }
