@@ -1,0 +1,35 @@
+{
+  "goal": "Test diamond parallel execution",
+  "nodes": [
+    {
+      "actionId": "start_node",
+      "actionName": "Start Node",
+      "actionParams": {"prompt_message": "Complete start_node?"},
+      "actionStatus": "PENDING"
+    },
+    {
+      "actionId": "parallel_A",
+      "actionName": "Parallel A",
+      "actionParams": {"prompt_message": "Complete parallel_A?"},
+      "actionStatus": "PENDING"
+    },
+    {
+      "actionId": "parallel_B",
+      "actionName": "Parallel B",
+      "actionParams": {"prompt_message": "Complete parallel_B?"},
+      "actionStatus": "PENDING"
+    },
+    {
+      "actionId": "end_node",
+      "actionName": "End Node",
+      "actionParams": {"prompt_message": "Complete end_node?"},
+      "actionStatus": "PENDING"
+    }
+  ],
+  "relationships": [
+    {"sourceActionId": "start_node", "targetActionId": "parallel_A", "type": "DEPENDS_ON"},
+    {"sourceActionId": "start_node", "targetActionId": "parallel_B", "type": "DEPENDS_ON"},
+    {"sourceActionId": "parallel_A", "targetActionId": "end_node", "type": "DEPENDS_ON"},
+    {"sourceActionId": "parallel_B", "targetActionId": "end_node", "type": "DEPENDS_ON"}
+  ]
+}

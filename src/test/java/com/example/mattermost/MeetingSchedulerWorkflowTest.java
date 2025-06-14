@@ -584,8 +584,100 @@ public class MeetingSchedulerWorkflowTest {
 
         // Verify total mock interactions
         // LLM is called for each action before attempting user input or other logic.
-        verify(mockLLMActivity, times(3)).isActionComplete(anyString(), anyMap(), anyMap());
+        // action_start, action_parallel_A, action_parallel_B
+        verify(mockLLMActivity, timeout(1000).times(3)).isActionComplete(anyString(), anyMap(), anyMap());
         verify(mockAskUserActivity, times(3)).ask(anyString(), anyString());
         verify(mockValidateInputActivity, times(3)).validate(anyString(), anyMap(), anyMap());
+    }
+
+    @Test
+    public void testDiamondParallelWorkflow() throws Exception {
+        System.out.println("Starting testDiamondParallelWorkflow with taskQueue: " + this.taskQueue);
+        assertNotNull(mockAskUserActivity, "mockAskUserActivity should not be null at start of test method.");
+        assertNotNull(mockValidateInputActivity, "mockValidateInputActivity should not be null at start of test method.");
+        assertNotNull(worker, "worker should not be null at start of test method.");
+        assertNotNull(workflowClient, "workflowClient should not be null at start of test method.");
+
+        Goal goal = loadGoalFromJson("test-goal-diamond.json");
+
+        // Mock activity behavior
+        when(mockLLMActivity.isActionComplete(anyString(), anyMap(), anyMap())).thenReturn(false); // LLM never completes
+        when(mockValidateInputActivity.validate(anyString(), anyMap(), anyMap())).thenReturn(true); // Validation always passes
+        doNothing().when(mockAskUserActivity).ask(anyString(), anyString());
+
+        MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(
+                MeetingSchedulerWorkflow.class,
+                WorkflowOptions.newBuilder()
+                        .setWorkflowId("testDiamondParallel-" + UUID.randomUUID())
+                        .setTaskQueue(taskQueue)
+                        .build());
+
+        WorkflowClient.start(workflow::scheduleMeeting, goal);
+
+        ArgumentCaptor<String> askActionIdCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
+
+        // Step 1: 'start_node'
+        logger.info("Test [Diamond]: Verifying ask for start_node");
+        verify(mockAskUserActivity, timeout(5000).times(1)).ask(askActionIdCaptor.capture(), promptCaptor.capture());
+        assertEquals("start_node", askActionIdCaptor.getValue());
+        workflow.onUserResponse("start_node", Map.of("status", "start_node_done"));
+        logger.info("Test [Diamond]: Signal for start_node sent.");
+
+        // Step 2: 'parallel_A' and 'parallel_B'
+        // After start_node is completed, two more 'ask' calls should happen for parallel_A and parallel_B.
+        // Total calls to ask will be 1 (for start_node) + 2 (for parallel_A and parallel_B) = 3
+        logger.info("Test [Diamond]: Verifying asks for parallel_A and parallel_B");
+        verify(mockAskUserActivity, timeout(5000).times(3)).ask(askActionIdCaptor.capture(), promptCaptor.capture());
+        List<String> capturedActionIdsAfterStart = askActionIdCaptor.getAllValues();
+        // The first one is start_node (index 0), the next two are parallel_A and parallel_B (indices 1 and 2).
+        assertTrue(capturedActionIdsAfterStart.contains("parallel_A"), "parallel_A should be called. Called: " + capturedActionIdsAfterStart);
+        assertTrue(capturedActionIdsAfterStart.contains("parallel_B"), "parallel_B should be called. Called: " + capturedActionIdsAfterStart);
+        logger.info("Test [Diamond]: Asks for parallel_A and parallel_B verified. Current asks: " + capturedActionIdsAfterStart);
+
+        // Step 3: Signal one parallel branch (e.g., 'parallel_A')
+        workflow.onUserResponse("parallel_A", Map.of("status", "parallel_A_done"));
+        logger.info("Test [Diamond]: Signal for parallel_A sent.");
+
+        // Verify that 'ask' for 'end_node' has *not* yet been called.
+        // Total calls to ask should still be 3.
+        // We need to give a very small pause for the workflow to potentially (incorrectly) process.
+        // Then verify that no *new* call to ask has happened.
+        try {
+             verify(mockAskUserActivity, timeout(1000).times(4)).ask(anyString(), anyString());
+             fail("askUserActivity.ask should not have been called for end_node yet. Total calls should be 3.");
+        } catch (org.mockito.exceptions.verification.TooLittleActualInvocations e) {
+            // Expected: times(3) was wanted, but was times(4)
+            // This is a bit tricky. We want to assert no *new* calls.
+            // The verify(..., times(3)) above already passed. If a 4th call happened, it would fail there too soon.
+            // A better way is to ensure the *last* captured ID is not 'end_node' yet if count is 3.
+            // Or, more simply, ensure the count remains 3.
+        }
+        // Re-verify count is still 3
+        verify(mockAskUserActivity, times(3)).ask(anyString(), anyString());
+        logger.info("Test [Diamond]: Verified ask for end_node has not occurred yet.");
+
+        // Step 4: Signal other parallel branch (e.g., 'parallel_B')
+        workflow.onUserResponse("parallel_B", Map.of("status", "parallel_B_done"));
+        logger.info("Test [Diamond]: Signal for parallel_B sent.");
+
+        // Step 5: 'end_node'
+        // Now, 'ask' for 'end_node' should be called. Total calls to ask will be 4.
+        logger.info("Test [Diamond]: Verifying ask for end_node");
+        verify(mockAskUserActivity, timeout(5000).times(4)).ask(askActionIdCaptor.capture(), promptCaptor.capture());
+        assertEquals("end_node", askActionIdCaptor.getValue()); // Last captured value
+        workflow.onUserResponse("end_node", Map.of("status", "end_node_done"));
+        logger.info("Test [Diamond]: Signal for end_node sent.");
+
+        // Step 6: Completion
+        logger.info("Test [Diamond]: Waiting for workflow completion...");
+        WorkflowStub.fromTyped(workflow).getResult(15, java.util.concurrent.TimeUnit.SECONDS, Void.class);
+        logger.info("Test [Diamond]: Workflow completed.");
+
+        // Verify total mock interaction counts
+        // LLM is called for each of the 4 actions.
+        verify(mockLLMActivity, times(4)).isActionComplete(anyString(), anyMap(), anyMap());
+        verify(mockAskUserActivity, times(4)).ask(anyString(), anyString());
+        verify(mockValidateInputActivity, times(4)).validate(anyString(), anyMap(), anyMap());
     }
 }
