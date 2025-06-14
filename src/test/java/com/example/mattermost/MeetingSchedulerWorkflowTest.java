@@ -56,11 +56,11 @@ public class MeetingSchedulerWorkflowTest {
 
 
     @BeforeEach
-    public void setUp(TestWorkflowEnvironment testEnv) {
+    public void setUp() { // Removed TestWorkflowEnvironment testEnv parameter
         // testEnv is injected by TestWorkflowExtension if not using setDoNotStart(true)
         // If using setDoNotStart(true), testEnv needs to be obtained from the extension.
-        assertNotNull(testEnv, "testEnv should be injected by JUnit/Temporal extension.");
-        this.testEnv = testEnv;
+        this.testEnv = testWorkflowExtension.getTestEnvironment(); // Get from extension
+        assertNotNull(this.testEnv, "testEnv should be obtained from TestWorkflowExtension.");
 
 
         taskQueue = "Test-" + UUID.randomUUID().toString();
@@ -520,5 +520,72 @@ public class MeetingSchedulerWorkflowTest {
             assertTrue(e instanceof io.temporal.client.WorkflowException || e.getMessage().contains("timeout"), "Expected workflow to timeout or throw WorkflowException.");
         }
         // To properly test the FAILED state, one would ideally have a query method on the workflow.
+        // With the refactor, the workflow should complete, as the failed action doesn't block the workflow method itself.
+        logger.info("Test: Verifying workflow completes even if the action fails internally.");
+        assertDoesNotThrow(() -> WorkflowStub.fromTyped(workflow).getResult(10, java.util.concurrent.TimeUnit.SECONDS, Void.class),
+            "Workflow should complete successfully even if an action fails internally, as the workflow method itself doesn't fail.");
+
+    }
+
+    @Test
+    public void testParallelActionsExecution() throws Exception {
+        System.out.println("Starting testParallelActionsExecution with taskQueue: " + this.taskQueue);
+        assertNotNull(mockAskUserActivity, "mockAskUserActivity should not be null at start of test method.");
+        assertNotNull(mockValidateInputActivity, "mockValidateInputActivity should not be null at start of test method.");
+        assertNotNull(worker, "worker should not be null at start of test method.");
+        assertNotNull(workflowClient, "workflowClient should not be null at start of test method.");
+
+        Goal goal = loadGoalFromJson("test-goal-parallel.json");
+
+        // Mock activity behavior
+        when(mockLLMActivity.isActionComplete(anyString(), anyMap(), anyMap())).thenReturn(false);
+        when(mockValidateInputActivity.validate(anyString(), anyMap(), anyMap())).thenReturn(true);
+        doNothing().when(mockAskUserActivity).ask(anyString(), anyString());
+
+        MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(
+                MeetingSchedulerWorkflow.class,
+                WorkflowOptions.newBuilder()
+                        .setWorkflowId("testParallel-" + UUID.randomUUID())
+                        .setTaskQueue(taskQueue)
+                        .build());
+
+        WorkflowClient.start(workflow::scheduleMeeting, goal);
+
+        ArgumentCaptor<String> actionIdCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
+
+        logger.info("Test [Parallel]: Verifying ask for action_start");
+        verify(mockAskUserActivity, timeout(5000).times(1)).ask(actionIdCaptor.capture(), promptCaptor.capture());
+        assertEquals("action_start", actionIdCaptor.getValue());
+        workflow.onUserResponse("action_start", Map.of("status", "start_done"));
+        logger.info("Test [Parallel]: Signal for action_start sent.");
+
+        logger.info("Test [Parallel]: Verifying asks for action_parallel_A and action_parallel_B");
+        // After action_start is completed, two more 'ask' calls should happen for A and B.
+        // Total calls to ask will be 1 (for start) + 2 (for A and B) = 3
+        verify(mockAskUserActivity, timeout(5000).times(3)).ask(actionIdCaptor.capture(), promptCaptor.capture());
+        List<String> capturedActionIds = actionIdCaptor.getAllValues();
+
+        // The first one is action_start (index 0), the next two are A and B (indices 1 and 2).
+        // We need to check the last two captured values.
+        List<String> parallelActionsCalled = capturedActionIds.subList(1, capturedActionIds.size());
+        assertTrue(parallelActionsCalled.contains("action_parallel_A"), "action_parallel_A should be called. Called: " + parallelActionsCalled);
+        assertTrue(parallelActionsCalled.contains("action_parallel_B"), "action_parallel_B should be called. Called: " + parallelActionsCalled);
+        logger.info("Test [Parallel]: Asks for action_parallel_A and action_parallel_B verified.");
+
+        workflow.onUserResponse("action_parallel_A", Map.of("status", "A_done"));
+        logger.info("Test [Parallel]: Signal for action_parallel_A sent.");
+        workflow.onUserResponse("action_parallel_B", Map.of("status", "B_done"));
+        logger.info("Test [Parallel]: Signal for action_parallel_B sent.");
+
+        logger.info("Test [Parallel]: Waiting for workflow completion...");
+        WorkflowStub.fromTyped(workflow).getResult(15, java.util.concurrent.TimeUnit.SECONDS, Void.class);
+        logger.info("Test [Parallel]: Workflow completed.");
+
+        // Verify total mock interactions
+        // LLM is called for each action before attempting user input or other logic.
+        verify(mockLLMActivity, times(3)).isActionComplete(anyString(), anyMap(), anyMap());
+        verify(mockAskUserActivity, times(3)).ask(anyString(), anyString());
+        verify(mockValidateInputActivity, times(3)).validate(anyString(), anyMap(), anyMap());
     }
 }
