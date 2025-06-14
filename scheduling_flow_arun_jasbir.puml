@@ -1,0 +1,38 @@
+@startuml Arun & Jasbir Meeting Scheduling Flow
+
+title Meeting Scheduling Flow for Arun & Jasbir
+
+!theme vibrant
+
+start
+
+:Get Requester's Meeting Details;
+note right: User (Requester) provides
+preferred topic, date, time, duration.
+
+fork
+    :Ask Arun for Availability;
+    note right: System asks Arun.
+User (Arun) provides availability.
+fork again
+    :Ask Jasbir for Availability;
+    note right: System asks Jasbir.
+User (Jasbir) provides availability.
+end fork
+
+:Consolidate All Availabilities;
+note right: System reviews requester preferences
+and availabilities from Arun & Jasbir
+to find common optimal slots.
+
+:Propose Final Meeting Time for Approval;
+note right: System proposes time.
+Users (Requester, Arun, Jasbir)
+provide approval.
+
+:Send Final Meeting Invite;
+note right: System sends calendar invite.
+
+stop
+
+@enduml
