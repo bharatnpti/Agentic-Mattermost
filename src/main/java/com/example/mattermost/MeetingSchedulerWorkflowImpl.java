@@ -90,9 +90,14 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                 currentGoal.getGoal(), failedActionDetails);
             // Ensure final outputs are set before throwing.
             this.currentGoal.setActionOutputs(this.actionOutputs);
+            // Assuming "WorkflowFailure" is the type, and no additional details.
+            // Common signature: newApplicationFailure(String message, String type, Object... details)
+            // Or: newApplicationFailure(String message, String type, boolean nonRetryable, Throwable cause, Object... details)
+            // Let's try the simpler one that fits the original intent. The 'type' field in ApplicationFailure is a string.
             throw Workflow.newApplicationFailure(
                 "Workflow completed with one or more FAILED actions: " + failedActionDetails,
-                "WorkflowFailure");
+                "WorkflowFailure", // type
+                null); // details
         }
 
         logger.info("Workflow completed successfully for goal: {}. Final outputs (will be updated by signals): {}", currentGoal.getGoal(), actionOutputs);
@@ -178,7 +183,8 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
         List<Promise<Boolean>> actionPromises = new ArrayList<>();
         for (ActionNode action : processableActions) {
             logger.info("Queueing action for parallel execution: {}", action.getActionId());
-            actionPromises.add(Async.invoke(() -> processSingleAction(action)));
+            // Corrected usage of Async.function for a method reference with an argument
+            actionPromises.add(Async.function(this::processSingleAction, action));
         }
 
         logger.info("Waiting for {} actions to complete...", actionPromises.size());
@@ -246,11 +252,13 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                 String resolvedPrompt = resolvePlaceholders(prompt, actionOutputs);
                 logger.info("executeActionLogic: Action {} not completed by LLM. Proceeding with user input. Prompt: '{}'", action.getActionId(), resolvedPrompt);
                 try {
-                    askUserActivity.ask(action.getActionId(), resolvedPrompt);
+                    // Set state before calling activity to avoid race condition with incoming signal
                     actionStatuses.put(action.getActionId(), ActionStatus.WAITING_FOR_INPUT);
                     currentGoal.getNodeById(action.getActionId()).setActionStatus(ActionStatus.WAITING_FOR_INPUT);
                     waitingForUserInputMap.put(action.getActionId(), prompt);
-                    logger.info("executeActionLogic: Action {} is now WAITING_FOR_INPUT.", action.getActionId());
+                    logger.info("executeActionLogic: Action {} set to WAITING_FOR_INPUT. Calling askUserActivity.", action.getActionId());
+
+                    askUserActivity.ask(action.getActionId(), resolvedPrompt); // Now call activity
                 } catch (Exception e) {
                     logger.error("executeActionLogic: Error calling askUserActivity for action {}: {}", action.getActionId(), e.getMessage(), e);
                     actionStatuses.put(action.getActionId(), ActionStatus.FAILED);

@@ -3,9 +3,9 @@
 /app/src/main/java/com/example/mattermost/WorkflowController.java
 /app/src/main/java/com/example/mattermost/AskUserActivity.java
 /app/src/main/java/com/example/mattermost/ActionStatus.java
+/app/src/main/java/com/example/mattermost/MeetingSchedulerAppMain.java
 /app/src/main/java/com/example/mattermost/LLMActivity.java
 /app/src/main/java/com/example/mattermost/UserResponsePayload.java
-/app/src/main/java/com/example/mattermost/MeetingSchedulerAppMain.java
 /app/src/main/java/com/example/mattermost/Goal.java
 /app/src/main/java/com/example/mattermost/AskUserActivityImpl.java
 /app/src/main/java/com/example/mattermost/ValidateInputActivity.java

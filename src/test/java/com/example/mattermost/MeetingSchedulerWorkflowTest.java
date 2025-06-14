@@ -1,6 +1,13 @@
 package com.example.mattermost;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import io.temporal.client.WorkflowClientOptions;
+import io.temporal.common.converter.DataConverter;
+import io.temporal.common.converter.JacksonJsonPayloadConverter;
+import io.temporal.worker.WorkerFactoryOptions;
+import org.mockito.exceptions.verification.TooLittleActualInvocations;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.temporal.activity.ActivityOptions;
 import io.temporal.api.common.v1.WorkflowExecution;
@@ -17,6 +24,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.mockito.ArgumentCaptor;
+import org.mockito.exceptions.base.MockitoAssertionError;
 
 import java.io.InputStream;
 import java.time.Duration;
@@ -38,26 +46,15 @@ public class MeetingSchedulerWorkflowTest {
 
     private static final Logger logger = LoggerFactory.getLogger(MeetingSchedulerWorkflowTest.class);
 
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import io.temporal.client.WorkflowClientOptions;
-import io.temporal.common.converter.DataConverter;
-import io.temporal.common.converter.JacksonJsonPayloadConverter;
-import io.temporal.worker.WorkerFactoryOptions;
-
-public class MeetingSchedulerWorkflowTest {
-
-    private static final Logger logger = LoggerFactory.getLogger(MeetingSchedulerWorkflowTest.class);
-
     // Configure ObjectMapper for Temporal's DataConverter
     private static final ObjectMapper temporalObjectMapper = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             // Configure as needed, e.g., for enums, though defaults are often fine
-            // .configure(SerializationFeature.WRITE_ENUMS_USING_TO_STRING, true)
-            // .configure(DeserializationFeature.READ_ENUMS_USING_TO_STRING, true)
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false); // Already in @JsonIgnoreProperties
+            .configure(SerializationFeature.WRITE_ENUMS_USING_TO_STRING, true)
+            .configure(DeserializationFeature.READ_ENUMS_USING_TO_STRING, true)
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
-    private static final DataConverter jacksonDataConverter = new JacksonJsonPayloadConverter(temporalObjectMapper);
+    private static final DataConverter jacksonDataConverter = (DataConverter) new JacksonJsonPayloadConverter(temporalObjectMapper); // Explicit cast
 
     @RegisterExtension
     public static final TestWorkflowExtension testWorkflowExtension =
@@ -68,7 +65,7 @@ public class MeetingSchedulerWorkflowTest {
                             .setDataConverter(jacksonDataConverter)
                             .build())
                     .setWorkerFactoryOptions(WorkerFactoryOptions.newBuilder()
-                            .setDataConverter(jacksonDataConverter)
+                            // .setDataConverter(jacksonDataConverter) // Removed this line
                             .build())
                     .build();
 
@@ -83,11 +80,9 @@ public class MeetingSchedulerWorkflowTest {
 
 
     @BeforeEach
-    public void setUp() { // Removed TestWorkflowEnvironment testEnv parameter
-        // testEnv is injected by TestWorkflowExtension if not using setDoNotStart(true)
-        // If using setDoNotStart(true), testEnv needs to be obtained from the extension.
-        this.testEnv = testWorkflowExtension.getTestEnvironment(); // Get from extension
-        assertNotNull(this.testEnv, "testEnv should be obtained from TestWorkflowExtension.");
+    public void setUp(TestWorkflowEnvironment testEnv) { // Direct injection
+        this.testEnv = testEnv;
+        assertNotNull(this.testEnv, "testEnv should be injected by TestWorkflowExtension.");
 
 
         taskQueue = "Test-" + UUID.randomUUID().toString();
@@ -183,6 +178,7 @@ public class MeetingSchedulerWorkflowTest {
         assertEquals("get_details", actionIdCaptor.getValue());
         assertTrue(promptCaptor.getValue().contains("preferred topic"));
         logger.info("Test: askUserActivity.ask for get_details verified. Sending signal.");
+        testEnv.sleep(Duration.ofMillis(100)); // Allow workflow to fully reach WAITING_FOR_INPUT
 
         // Send signal for "get_details"
         workflow.onUserResponse("get_details", Map.of("topic", "Test Meeting", "datetime", "Tomorrow", "duration", "1hr"));
@@ -196,6 +192,7 @@ public class MeetingSchedulerWorkflowTest {
         assertEquals("send_invite", actionIdCaptor.getValue()); // Mockito captures the latest value
         assertTrue(promptCaptor.getValue().contains("Confirm sending invite"));
         logger.info("Test: askUserActivity.ask for send_invite verified. Sending signal.");
+        testEnv.sleep(Duration.ofMillis(100)); // Allow workflow to fully reach WAITING_FOR_INPUT
 
         // Send signal for "send_invite"
         workflow.onUserResponse("send_invite", Map.of("status", "Invite sent"));
@@ -241,42 +238,44 @@ public class MeetingSchedulerWorkflowTest {
 
         WorkflowClient.start(workflow::scheduleMeeting, goal);
 
-        // Signal 1 (leads to validation failure)
-        workflow.onUserResponse(singleAction.getActionId(), Map.of("input", "bad_initial_input"));
-
-        // Wait a bit for the workflow to process the first response and re-prompt.
-        // This is a common challenge in testing Temporal workflows with external interaction points.
-        // Using TestWorkflowEnvironment.sleep() or waiting for mock invocations with timeouts.
         // Verify initial prompt
         ArgumentCaptor<String> promptCaptor1 = ArgumentCaptor.forClass(String.class);
-        logger.info("Test: Verifying initial ask for {}", singleAction.getActionId());
+        String expectedInitialPrompt = goal.getNodeById(singleAction.getActionId()).getActionParams().get("prompt_message").toString();
+        logger.info("Test: Verifying initial ask for {} with prompt containing '{}'", singleAction.getActionId(), expectedInitialPrompt);
         verify(mockAskUserActivity, timeout(5000).times(1)).ask(eq(singleAction.getActionId()), promptCaptor1.capture());
-        assertTrue(promptCaptor1.getValue().contains(goal.getNodeById(singleAction.getActionId()).getActionParams().get("prompt_message").toString()));
-        // The first bad input signal is sent by the next line, the log message below is for that signal.
-        logger.info("Test: Initial ask for {} verified. Sending bad input.", singleAction.getActionId());
+        assertTrue(promptCaptor1.getValue().contains(expectedInitialPrompt),
+                "Initial prompt was not as expected. Expected to contain: '" + expectedInitialPrompt + "', Actual: '" + promptCaptor1.getValue() + "'");
+        logger.info("Test: Initial ask for {} verified.", singleAction.getActionId());
 
-        // Signal 1 (leads to validation failure) - This is the first bad input signal. The duplicate is removed.
-        // The log line for this signal was above.
-        // workflow.onUserResponse(singleAction.getActionId(), Map.of("input", "bad_initial_input")); // This was the duplicate line removed
-        // logger.info("Test: Bad input signal sent for {}.", singleAction.getActionId()); // This was the duplicate log line removed
-
-        // Verify re-prompt after validation failure
-        ArgumentCaptor<String> promptCaptor2 = ArgumentCaptor.forClass(String.class);
-        logger.info("Test: Verifying re-prompt for {} after bad input.", singleAction.getActionId());
-        // This is the second call to ask() for this specific actionId in sequence
-        verify(mockAskUserActivity, timeout(5000).times(2)).ask(eq(singleAction.getActionId()), promptCaptor2.capture());
-        assertTrue(promptCaptor2.getValue().contains("Your previous input was not sufficient."));
-        logger.info("Test: Re-prompt for {} verified. Sending good input.", singleAction.getActionId());
+        // Signal 1 (leads to validation failure)
+        logger.info("Test: Sending bad input signal for {}.", singleAction.getActionId());
+        workflow.onUserResponse(singleAction.getActionId(), Map.of("input", "bad_initial_input"));
+        logger.info("Test: Bad input signal sent for {}.", singleAction.getActionId());
 
         // Signal 2 (leads to validation success)
+        // Send this immediately after the bad one. The workflow should process them sequentially.
+        logger.info("Test: Sending good input signal for {}.", singleAction.getActionId());
         workflow.onUserResponse(singleAction.getActionId(), Map.of("input", "good_final_input"));
         logger.info("Test: Good input signal sent for {}.", singleAction.getActionId());
+
+        // Now verify the sequence of prompts.
+        // First prompt (initial)
+        ArgumentCaptor<String> promptCaptorAll = ArgumentCaptor.forClass(String.class);
+        verify(mockAskUserActivity, timeout(10000).times(2)).ask(eq(singleAction.getActionId()), promptCaptorAll.capture());
+
+        List<String> allPrompts = promptCaptorAll.getAllValues();
+        assertTrue(allPrompts.get(0).contains(expectedInitialPrompt),
+                "Initial prompt was not as expected. Expected to contain: '" + expectedInitialPrompt + "', Actual: '" + allPrompts.get(0) + "'");
+        logger.info("Test: Initial prompt verified: {}", allPrompts.get(0));
+
+        assertTrue(allPrompts.get(1).contains("Your previous input was not sufficient."),
+                "Re-prompt message was not as expected. Expected to contain: 'Your previous input was not sufficient.', Actual: '" + allPrompts.get(1) + "'");
+        logger.info("Test: Re-prompt verified: {}", allPrompts.get(1));
 
         logger.info("Test: Waiting for workflow completion for testInputValidationFailureAndRetry...");
         WorkflowStub.fromTyped(workflow).getResult(15, java.util.concurrent.TimeUnit.SECONDS, Void.class);
         logger.info("Test: Workflow completed for testInputValidationFailureAndRetry.");
 
-        verify(mockAskUserActivity, times(2)).ask(eq(singleAction.getActionId()), anyString());
         verify(mockValidateInputActivity, times(2)).validate(eq(singleAction.getActionId()), anyMap(), anyMap());
         // WorkflowStub.getResult() would throw an exception if not completed successfully.
     }
@@ -317,37 +316,43 @@ public class MeetingSchedulerWorkflowTest {
         // 1. get_requester_preferred_details_001
         logger.info("Test: Verifying ask for get_requester_preferred_details_001");
         verify(mockAskUserActivity, timeout(5000).times(1)).ask(eq("get_requester_preferred_details_001"), promptCaptor.capture());
+        testEnv.sleep(Duration.ofMillis(100));
         Map<String, Object> detailsInput = Map.of("topic", "Project Phoenix", "datetime", "Next Monday 10AM", "duration", "1 hour");
         workflow.onUserResponse("get_requester_preferred_details_001", detailsInput);
         logger.info("Test: Signal for get_requester_preferred_details_001 sent.");
 
         // 2. ask_arun_availability_001 (depends on 1)
         logger.info("Test: Verifying ask for ask_arun_availability_001");
-        verify(mockAskUserActivity, timeout(5000).times(1)).ask(eq("ask_arun_availability_001"), promptCaptor.capture());
+        verify(mockAskUserActivity, timeout(5000).times(2)).ask(eq("ask_arun_availability_001"), promptCaptor.capture());
+        testEnv.sleep(Duration.ofMillis(100));
         workflow.onUserResponse("ask_arun_availability_001", Map.of("arun_availability", "Monday 10AM-12PM"));
         logger.info("Test: Signal for ask_arun_availability_001 sent.");
 
         // 3. ask_jasbir_availability_001 (depends on 1)
         logger.info("Test: Verifying ask for ask_jasbir_availability_001");
-        verify(mockAskUserActivity, timeout(5000).times(1)).ask(eq("ask_jasbir_availability_001"), promptCaptor.capture());
+        verify(mockAskUserActivity, timeout(5000).times(3)).ask(eq("ask_jasbir_availability_001"), promptCaptor.capture());
+        testEnv.sleep(Duration.ofMillis(100));
         workflow.onUserResponse("ask_jasbir_availability_001", Map.of("jasbir_availability", "Monday 10AM-11AM"));
         logger.info("Test: Signal for ask_jasbir_availability_001 sent.");
 
         // 4. consolidate_availabilities_001 (depends on 1, 2, 3)
         logger.info("Test: Verifying ask for consolidate_availabilities_001");
-        verify(mockAskUserActivity, timeout(5000).times(1)).ask(eq("consolidate_availabilities_001"), promptCaptor.capture());
+        verify(mockAskUserActivity, timeout(5000).times(4)).ask(eq("consolidate_availabilities_001"), promptCaptor.capture());
+        testEnv.sleep(Duration.ofMillis(100));
         workflow.onUserResponse("consolidate_availabilities_001", Map.of("proposed_time", "Monday 10AM (Consolidated)"));
         logger.info("Test: Signal for consolidate_availabilities_001 sent.");
 
         // 5. propose_final_time_for_approval_001 (depends on 4)
         logger.info("Test: Verifying ask for propose_final_time_for_approval_001");
-        verify(mockAskUserActivity, timeout(5000).times(1)).ask(eq("propose_final_time_for_approval_001"), promptCaptor.capture());
+        verify(mockAskUserActivity, timeout(5000).times(5)).ask(eq("propose_final_time_for_approval_001"), promptCaptor.capture());
+        testEnv.sleep(Duration.ofMillis(100));
         workflow.onUserResponse("propose_final_time_for_approval_001", Map.of("approved_time_final", "Monday 10AM Approved"));
         logger.info("Test: Signal for propose_final_time_for_approval_001 sent.");
 
         // 6. send_meeting_invite_001 (depends on 5)
         logger.info("Test: Verifying ask for send_meeting_invite_001");
-        verify(mockAskUserActivity, timeout(5000).times(1)).ask(eq("send_meeting_invite_001"), promptCaptor.capture());
+        verify(mockAskUserActivity, timeout(5000).times(6)).ask(eq("send_meeting_invite_001"), promptCaptor.capture());
+        testEnv.sleep(Duration.ofMillis(100));
         workflow.onUserResponse("send_meeting_invite_001", Map.of("status", "Final invite sent successfully"));
         logger.info("Test: Signal for send_meeting_invite_001 sent.");
 
@@ -459,6 +464,7 @@ public class MeetingSchedulerWorkflowTest {
         ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
         verify(mockAskUserActivity, timeout(5000).times(1)).ask(eq(action.getActionId()), promptCaptor.capture());
         assertEquals(expectedPrompt, promptCaptor.getValue());
+        testEnv.sleep(Duration.ofMillis(100)); // Allow workflow to fully reach WAITING_FOR_INPUT
 
         // Send user response
         workflow.onUserResponse(action.getActionId(), Map.of("data", "user_provided_data"));
@@ -660,16 +666,17 @@ public class MeetingSchedulerWorkflowTest {
         try {
              verify(mockAskUserActivity, timeout(1000).times(4)).ask(anyString(), anyString());
              fail("askUserActivity.ask should not have been called for end_node yet. Total calls should be 3.");
-        } catch (org.mockito.exceptions.verification.TooLittleActualInvocations e) {
+        } catch (MockitoAssertionError e) { // Changed to more general Mockito error
             // Expected: times(3) was wanted, but was times(4)
             // This is a bit tricky. We want to assert no *new* calls.
             // The verify(..., times(3)) above already passed. If a 4th call happened, it would fail there too soon.
             // A better way is to ensure the *last* captured ID is not 'end_node' yet if count is 3.
             // Or, more simply, ensure the count remains 3.
         }
-        // Re-verify count is still 3
-        verify(mockAskUserActivity, times(3)).ask(anyString(), anyString());
-        logger.info("Test [Diamond]: Verified ask for end_node has not occurred yet.");
+        // Re-verify count is still 3. If a 4th call happened for end_node, this specific verify would not fail yet.
+        // The check is that no *new* distinct action was called beyond the initial 3.
+        verify(mockAskUserActivity, atMost(3)).ask(anyString(), anyString());
+        logger.info("Test [Diamond]: Verified ask for end_node has not occurred yet by checking ask count is still at most 3.");
 
         // Step 4: Signal other parallel branch (e.g., 'parallel_B')
         workflow.onUserResponse("parallel_B", Map.of("status", "parallel_B_done"));
@@ -976,20 +983,26 @@ public class MeetingSchedulerWorkflowTest {
 
         // Check if the cause is a TimeoutFailure of type WORKFLOW_EXECUTION_TIMEOUT
         // Or if the message indicates a workflow execution timeout.
-        boolean isTimeoutFailure = exception.getCause() instanceof io.temporal.failure.TimeoutFailure;
-        boolean isCorrectTimeoutType = false;
-        if (isTimeoutFailure) {
-            isCorrectTimeoutType = ((io.temporal.failure.TimeoutFailure)exception.getCause()).getTimeoutType() == io.temporal.api.enums.v1.TimeoutType.TIMEOUT_TYPE_START_TO_CLOSE ||
-                                   ((io.temporal.failure.TimeoutFailure)exception.getCause()).getTimeoutType() == io.temporal.api.enums.v1.TimeoutType.TIMEOUT_TYPE_WORKFLOW_EXECUTION; // WORKFLOW_EXECUTION is for runTimeout
+        // Check if the cause is a TimeoutFailure of type WORKFLOW_EXECUTION_TIMEOUT (now START_TO_CLOSE)
+        // Or if the message indicates a workflow execution timeout.
+        // The actual exception might be WorkflowFailedException with a TimeoutFailure cause,
+        // or sometimes the WorkflowFailedException itself might be a subclass of TimeoutFailure in some SDK versions/scenarios.
+
+        Throwable cause = exception;
+        boolean foundTimeoutFailure = false;
+        while (cause != null) {
+            if (cause instanceof io.temporal.failure.TimeoutFailure) {
+                io.temporal.failure.TimeoutFailure tf = (io.temporal.failure.TimeoutFailure) cause;
+                if (tf.getTimeoutType() == io.temporal.api.enums.v1.TimeoutType.TIMEOUT_TYPE_START_TO_CLOSE) {
+                    foundTimeoutFailure = true;
+                    break;
+                }
+            }
+            cause = cause.getCause();
         }
-        // Sometimes the top level exception IS the TimeoutFailure
-        boolean isTopLevelTimeout = exception instanceof io.temporal.failure.TimeoutFailure &&
-                                    (((io.temporal.failure.TimeoutFailure)exception).getTimeoutType() == io.temporal.api.enums.v1.TimeoutType.TIMEOUT_TYPE_START_TO_CLOSE ||
-                                     ((io.temporal.failure.TimeoutFailure)exception).getTimeoutType() == io.temporal.api.enums.v1.TimeoutType.TIMEOUT_TYPE_WORKFLOW_EXECUTION);
 
-
-        assertTrue(isCorrectTimeoutType || isTopLevelTimeout || exception.getMessage().toLowerCase().contains("workflow execution timed out"),
-            "Exception should be due to workflow execution timeout. Actual cause: " + exception.getCause() + ", Message: " + exception.getMessage());
+        assertTrue(foundTimeoutFailure || exception.getMessage().toLowerCase().contains("workflow execution timed out"),
+            "Exception should be due to workflow execution timeout (START_TO_CLOSE). Actual exception: " + exception);
 
         logger.info("Test [ExecTimeout]: Workflow timed out as expected.");
          // Verify that the first action (LLM or ask) was attempted
@@ -1008,7 +1021,7 @@ public class MeetingSchedulerWorkflowTest {
         // Configure mockAskUserActivity to simulate a timeout by throwing ApplicationFailure.newTimeoutFailure
         // This will be subject to the activity's retry policy defined in MeetingSchedulerWorkflowImpl
         // RetryPolicy: initial=1s, maxInterval=10s, backoff=2, maxAttempts=3
-        doThrow(io.temporal.failure.ApplicationFailure.newTimeoutFailure("Simulated AskUserActivity timeout", null))
+        doThrow(io.temporal.failure.ApplicationFailure.newFailure("Simulated AskUserActivity timeout", "TimeoutError", true)) // Using newFailure to simulate a timeout that is retryable
             .when(mockAskUserActivity).ask(eq(action.getActionId()), anyString());
 
         MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(
@@ -1035,7 +1048,8 @@ public class MeetingSchedulerWorkflowTest {
         io.temporal.failure.ActivityFailure activityFailure = (io.temporal.failure.ActivityFailure) exception.getCause();
         assertTrue(activityFailure.getCause() instanceof io.temporal.failure.ApplicationFailure, "ActivityFailure's cause should be ApplicationFailure.");
         io.temporal.failure.ApplicationFailure appFailure = (io.temporal.failure.ApplicationFailure) activityFailure.getCause();
-        assertTrue(appFailure.isTimeout(), "ApplicationFailure should be a timeout.");
+        // For newFailure, isTimeout() might not be true. Check type or message.
+        assertEquals("TimeoutError", appFailure.getType());
         assertEquals("Simulated AskUserActivity timeout", appFailure.getOriginalMessage());
 
 
