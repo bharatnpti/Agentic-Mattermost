@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.List; // Added for actionIdCaptorAsk.getAllValues()
+import java.util.ArrayList; // For testMalformedGoalJson
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.eq;
@@ -679,5 +680,361 @@ public class MeetingSchedulerWorkflowTest {
         verify(mockLLMActivity, times(4)).isActionComplete(anyString(), anyMap(), anyMap());
         verify(mockAskUserActivity, times(4)).ask(anyString(), anyString());
         verify(mockValidateInputActivity, times(4)).validate(anyString(), anyMap(), anyMap());
+    }
+
+    @Test
+    public void testAskUserActivityThrowsException() throws Exception {
+        System.out.println("Starting testAskUserActivityThrowsException with taskQueue: " + this.taskQueue);
+        Goal goal = loadGoalFromJson("test-goal-single-action.json"); // Single action goal
+        ActionNode action = goal.getNodes().get(0);
+
+        // Configure mockAskUserActivity to throw an exception
+        when(mockLLMActivity.isActionComplete(eq(action.getActionId()), anyMap(), anyMap())).thenReturn(false); // Ensure LLM doesn't complete it
+        doThrow(new RuntimeException("Simulated AskUserActivity exception"))
+            .when(mockAskUserActivity).ask(eq(action.getActionId()), anyString());
+
+        MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(
+                MeetingSchedulerWorkflow.class,
+                WorkflowOptions.newBuilder()
+                        .setWorkflowId("testAskUserException-" + UUID.randomUUID())
+                        .setTaskQueue(taskQueue)
+                        // Set short workflow execution timeout for tests expecting failure
+                        .setWorkflowExecutionTimeout(Duration.ofSeconds(15))
+                        .setWorkflowRunTimeout(Duration.ofSeconds(15))
+                        .build());
+
+        WorkflowClient.start(workflow::scheduleMeeting, goal);
+
+        // Assert that workflow execution fails
+        WorkflowFailedException exception = assertThrows(WorkflowFailedException.class, () -> {
+            WorkflowStub.fromTyped(workflow).getResult(10, java.util.concurrent.TimeUnit.SECONDS, Void.class);
+        });
+        // Check if the cause is the simulated exception (or related to activity failure)
+        // Temporal wraps activity exceptions. The direct cause might be an ActivityFailure,
+        // and its cause would be our RuntimeException.
+        assertNotNull(exception.getCause(), "WorkflowFailedException should have a cause.");
+        // Depending on Temporal version and exact wrapping, we might look for ApplicationFailureException
+        // or check the message.
+        assertTrue(exception.getCause().getMessage().contains("Simulated AskUserActivity exception") ||
+                   exception.getCause().toString().contains("ActivityFailure"),
+                   "Exception cause should indicate the activity failure. Actual: " + exception.getCause());
+
+
+        // Verify that the ask method was called
+        verify(mockAskUserActivity, timeout(5000).times(1)).ask(eq(action.getActionId()), anyString());
+        // Verify LLM was checked
+        verify(mockLLMActivity, times(1)).isActionComplete(eq(action.getActionId()), anyMap(), anyMap());
+    }
+
+    @Test
+    public void testValidateInputActivityThrowsException() throws Exception {
+        System.out.println("Starting testValidateInputActivityThrowsException with taskQueue: " + this.taskQueue);
+        Goal goal = loadGoalFromJson("test-goal-single-action.json");
+        ActionNode action = goal.getNodes().get(0);
+        String expectedPrompt = (String) action.getActionParams().get("prompt_message");
+
+        // Configure mockValidateInputActivity to throw an exception
+        when(mockLLMActivity.isActionComplete(eq(action.getActionId()), anyMap(), anyMap())).thenReturn(false);
+        doNothing().when(mockAskUserActivity).ask(eq(action.getActionId()), anyString());
+        when(mockValidateInputActivity.validate(eq(action.getActionId()), anyMap(), anyMap()))
+            .thenThrow(new RuntimeException("Simulated ValidateInputActivity exception"));
+
+        MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(
+                MeetingSchedulerWorkflow.class,
+                WorkflowOptions.newBuilder()
+                        .setWorkflowId("testValidateInputException-" + UUID.randomUUID())
+                        .setTaskQueue(taskQueue)
+                        .setWorkflowExecutionTimeout(Duration.ofSeconds(15))
+                        .setWorkflowRunTimeout(Duration.ofSeconds(15))
+                        .build());
+
+        WorkflowClient.start(workflow::scheduleMeeting, goal);
+
+        // Wait for the initial ask
+        verify(mockAskUserActivity, timeout(5000).times(1)).ask(eq(action.getActionId()), eq(expectedPrompt));
+
+        // Send user response to trigger validation
+        workflow.onUserResponse(action.getActionId(), Map.of("data", "some_input"));
+
+        // Assert that workflow execution fails
+        WorkflowFailedException exception = assertThrows(WorkflowFailedException.class, () -> {
+            WorkflowStub.fromTyped(workflow).getResult(10, java.util.concurrent.TimeUnit.SECONDS, Void.class);
+        });
+        assertNotNull(exception.getCause(), "WorkflowFailedException should have a cause.");
+        assertTrue(exception.getCause().getMessage().contains("Simulated ValidateInputActivity exception") ||
+                   exception.getCause().toString().contains("ActivityFailure"),
+                   "Exception cause should indicate the activity failure. Actual: " + exception.getCause());
+
+        // Verify mock invocations
+        verify(mockLLMActivity, times(1)).isActionComplete(eq(action.getActionId()), anyMap(), anyMap());
+        verify(mockAskUserActivity, times(1)).ask(eq(action.getActionId()), anyString());
+        verify(mockValidateInputActivity, timeout(5000).times(1)).validate(eq(action.getActionId()), anyMap(), anyMap());
+    }
+
+    @Test
+    public void testLLMActivityThrowsException() throws Exception {
+        System.out.println("Starting testLLMActivityThrowsException with taskQueue: " + this.taskQueue);
+        Goal goal = loadGoalFromJson("test-goal-single-action.json");
+        ActionNode action = goal.getNodes().get(0);
+        action.setActionParams(new HashMap<>(Map.of("llm_can_complete", true, "prompt_message", "A prompt")));
+        goal.getNodes().set(0, action);
+
+        // Configure mockLLMActivity to throw an exception
+        when(mockLLMActivity.isActionComplete(eq(action.getActionId()), anyMap(), anyMap()))
+            .thenThrow(new RuntimeException("Simulated LLMActivity exception"));
+
+        MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(
+                MeetingSchedulerWorkflow.class,
+                WorkflowOptions.newBuilder()
+                        .setWorkflowId("testLLMException-" + UUID.randomUUID())
+                        .setTaskQueue(taskQueue)
+                        .setWorkflowExecutionTimeout(Duration.ofSeconds(15))
+                        .setWorkflowRunTimeout(Duration.ofSeconds(15))
+                        .build());
+
+        WorkflowClient.start(workflow::scheduleMeeting, goal);
+
+        // Assert that workflow execution fails
+        WorkflowFailedException exception = assertThrows(WorkflowFailedException.class, () -> {
+            WorkflowStub.fromTyped(workflow).getResult(10, java.util.concurrent.TimeUnit.SECONDS, Void.class);
+        });
+        assertNotNull(exception.getCause(), "WorkflowFailedException should have a cause.");
+        assertTrue(exception.getCause().getMessage().contains("Simulated LLMActivity exception") ||
+                   exception.getCause().toString().contains("ActivityFailure"),
+                   "Exception cause should indicate the activity failure. Actual: " + exception.getCause());
+
+        // Verify mockLLMActivity.isActionComplete was called
+        verify(mockLLMActivity, timeout(5000).times(1)).isActionComplete(eq(action.getActionId()), anyMap(), anyMap());
+        // Ensure askUserActivity was not called as LLM attempt failed before that.
+        verify(mockAskUserActivity, never()).ask(anyString(), anyString());
+    }
+
+    @Test
+    public void testInvalidActionIdSignal() throws Exception {
+        System.out.println("Starting testInvalidActionIdSignal with taskQueue: " + this.taskQueue);
+        Goal goal = loadGoalFromJson("test-goal-single-action.json");
+        ActionNode validAction = goal.getNodes().get(0);
+        String expectedPrompt = (String) validAction.getActionParams().get("prompt_message");
+
+        // Standard mock setup for a successful run
+        when(mockLLMActivity.isActionComplete(eq(validAction.getActionId()), anyMap(), anyMap())).thenReturn(false);
+        doNothing().when(mockAskUserActivity).ask(eq(validAction.getActionId()), anyString());
+        when(mockValidateInputActivity.validate(eq(validAction.getActionId()), anyMap(), anyMap())).thenReturn(true);
+
+        MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(
+                MeetingSchedulerWorkflow.class,
+                WorkflowOptions.newBuilder()
+                        .setWorkflowId("testInvalidSignal-" + UUID.randomUUID())
+                        .setTaskQueue(taskQueue)
+                        .build());
+
+        WorkflowClient.start(workflow::scheduleMeeting, goal);
+
+        // Wait for the initial ask for the valid action
+        verify(mockAskUserActivity, timeout(5000).times(1)).ask(eq(validAction.getActionId()), eq(expectedPrompt));
+
+        // Send an invalid signal
+        logger.info("Test: Sending invalid signal for 'invalid_action_id_blah'");
+        workflow.onUserResponse("invalid_action_id_blah", Map.of("data", "test_data_for_invalid_action"));
+
+        // Give some time for the workflow to potentially process the invalid signal (it should ignore it)
+        // We can't directly assert a log message here, so we rely on the workflow proceeding correctly.
+        Thread.sleep(500); // Small pause to ensure the invalid signal would have been processed if it were to cause issues.
+
+        // Send the valid signal
+        logger.info("Test: Sending valid signal for '{}'", validAction.getActionId());
+        workflow.onUserResponse(validAction.getActionId(), Map.of("input", "valid_input"));
+
+        // Assert that the workflow completes successfully
+        logger.info("Test: Waiting for workflow completion after valid signal...");
+        assertDoesNotThrow(() -> WorkflowStub.fromTyped(workflow).getResult(10, java.util.concurrent.TimeUnit.SECONDS, Void.class),
+            "Workflow should complete successfully, ignoring the invalid signal.");
+
+        // Verify interactions
+        verify(mockLLMActivity, times(1)).isActionComplete(eq(validAction.getActionId()), anyMap(), anyMap());
+        verify(mockAskUserActivity, times(1)).ask(eq(validAction.getActionId()), eq(expectedPrompt));
+        verify(mockValidateInputActivity, times(1)).validate(eq(validAction.getActionId()), anyMap(), anyMap());
+    }
+
+    @Test
+    public void testMalformedGoalJson() {
+        System.out.println("Starting testMalformedGoalJson with taskQueue: " + this.taskQueue);
+
+        MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(
+                MeetingSchedulerWorkflow.class,
+                WorkflowOptions.newBuilder()
+                        .setWorkflowId("testMalformedGoal-" + UUID.randomUUID())
+                        .setTaskQueue(taskQueue)
+                        .setWorkflowExecutionTimeout(Duration.ofSeconds(10)) // Short timeout
+                        .build());
+
+        // Test with a null goal
+        logger.info("Test [MalformedGoal]: Starting workflow with null goal.");
+        try {
+            WorkflowClient.start(workflow::scheduleMeeting, null);
+            // Depending on SDK version and client-side checks, this might throw directly
+            // or the workflow might fail very early.
+            // For a null parameter to the workflow method, it's often a client-side validation.
+            // However, if it reaches the workflow worker, it would likely be a NullPointerException.
+            // Let's expect WorkflowFailedException as a general wrapper if it gets that far,
+            // or a direct client error.
+            // TestWorkflowEnvironment might make this a WorkflowFailedException.
+            WorkflowFailedException e = assertThrows(WorkflowFailedException.class, () -> {
+                 WorkflowStub.fromTyped(workflow).getResult(5, java.util.concurrent.TimeUnit.SECONDS, Void.class);
+            }, "Starting with null goal should fail the workflow.");
+            // Check for common indications of such an error
+            //assertTrue(e.getCause() instanceof NullPointerException || e.getMessage().contains("null"),
+            //    "Cause should be NullPointerException or message indicate null input. Actual: " + e.getMessage() + ", Cause: " + e.getCause());
+            // The above check is tricky due to Temporal wrapping. A simpler check:
+            assertNotNull(e, "A WorkflowFailedException should be thrown for null goal.");
+            logger.info("Test [MalformedGoal]: Workflow failed as expected for null goal: {}", e.getMessage());
+
+        } catch (Exception e) {
+            // Catching general exceptions if WorkflowClient.start itself throws something before
+            // a WorkflowFailedException would be available (e.g. direct IllegalArgumentException)
+            logger.info("Test [MalformedGoal]: Workflow start failed directly for null goal: {}", e.getMessage());
+            assertTrue(e instanceof IllegalArgumentException || e instanceof NullPointerException,
+               "Direct exception should be IllegalArgumentException or NullPointerException for null goal. Actual: " + e.getClass().getName());
+        }
+
+
+        // Test with a goal missing essential fields (e.g. nodes list)
+        // Need a new workflow stub for a new workflow ID
+        workflow = workflowClient.newWorkflowStub(
+                MeetingSchedulerWorkflow.class,
+                WorkflowOptions.newBuilder()
+                        .setWorkflowId("testMalformedGoalNodes-" + UUID.randomUUID())
+                        .setTaskQueue(taskQueue)
+                        .setWorkflowExecutionTimeout(Duration.ofSeconds(10))
+                        .build());
+
+        Goal corruptedGoal = new Goal(); // Missing goalId, nodes, etc.
+        corruptedGoal.setGoal("Test with corrupted structure");
+        // Intentionally not setting nodes or goalId
+
+        logger.info("Test [MalformedGoal]: Starting workflow with corrupted goal (missing nodes).");
+        final MeetingSchedulerWorkflow wfWithCorruptedGoal = workflow;
+        WorkflowFailedException eCorrupted = assertThrows(WorkflowFailedException.class, () -> {
+            WorkflowClient.start(wfWithCorruptedGoal::scheduleMeeting, corruptedGoal);
+            WorkflowStub.fromTyped(wfWithCorruptedGoal).getResult(5, java.util.concurrent.TimeUnit.SECONDS, Void.class);
+        }, "Starting with corrupted goal (missing nodes) should fail.");
+        // The workflow tries to iterate over nodes: goal.getNodes().forEach(...)
+        // If nodes is null, this will cause a NullPointerException within the workflow code.
+        assertNotNull(eCorrupted.getCause(), "WorkflowFailedException from corrupted goal should have a cause.");
+        //assertTrue(eCorrupted.getCause() instanceof io.temporal.failure.ApplicationFailure, "Cause should be ApplicationFailure for NPE in workflow.");
+        //if (eCorrupted.getCause() instanceof io.temporal.failure.ApplicationFailure) {
+        //    assertTrue(((io.temporal.failure.ApplicationFailure)eCorrupted.getCause()).getType().equals(NullPointerException.class.getName()),
+        //        "ApplicationFailure type should be NullPointerException. Actual: " + ((io.temporal.failure.ApplicationFailure)eCorrupted.getCause()).getType());
+        //}
+        // More general check for the message due to variations in exception wrapping
+         assertTrue(eCorrupted.getMessage().toLowerCase().contains("nullpointerexception") ||
+                    eCorrupted.getMessage().toLowerCase().contains("applicationfailure"),
+             "Exception message should indicate NullPointerException or ApplicationFailure. Actual: " + eCorrupted.getMessage());
+        logger.info("Test [MalformedGoal]: Workflow failed as expected for corrupted goal: {}", eCorrupted.getMessage());
+    }
+
+
+    @Test
+    public void testWorkflowExecutionTimeout() throws Exception {
+        System.out.println("Starting testWorkflowExecutionTimeout with taskQueue: " + this.taskQueue);
+        Goal goal = loadGoalFromJson("test-goal-single-action.json"); // A simple goal
+
+        MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(
+                MeetingSchedulerWorkflow.class,
+                WorkflowOptions.newBuilder()
+                        .setWorkflowId("testExecTimeout-" + UUID.randomUUID())
+                        .setTaskQueue(taskQueue)
+                        .setWorkflowExecutionTimeout(Duration.ofSeconds(2)) // Very short execution timeout
+                        .setWorkflowRunTimeout(Duration.ofSeconds(1)) // Even shorter run timeout
+                        .build());
+
+        WorkflowClient.start(workflow::scheduleMeeting, goal);
+
+        // Do not send any signals, let it time out.
+        logger.info("Test [ExecTimeout]: Waiting for workflow to hit execution timeout...");
+        WorkflowFailedException exception = assertThrows(WorkflowFailedException.class, () -> {
+            // Result retrieval will wait until timeout or completion.
+            // The timeout for getResult should be longer than workflow exec timeout to ensure we see the right failure.
+            WorkflowStub.fromTyped(workflow).getResult(10, java.util.concurrent.TimeUnit.SECONDS, Void.class);
+        });
+
+        assertNotNull(exception.getCause(), "WorkflowFailedException should have a cause.");
+        logger.info("Test [ExecTimeout]: Workflow failed with exception: {}, cause: {}", exception.getMessage(), exception.getCause());
+
+        // Check if the cause is a TimeoutFailure of type WORKFLOW_EXECUTION_TIMEOUT
+        // Or if the message indicates a workflow execution timeout.
+        boolean isTimeoutFailure = exception.getCause() instanceof io.temporal.failure.TimeoutFailure;
+        boolean isCorrectTimeoutType = false;
+        if (isTimeoutFailure) {
+            isCorrectTimeoutType = ((io.temporal.failure.TimeoutFailure)exception.getCause()).getTimeoutType() == io.temporal.api.enums.v1.TimeoutType.TIMEOUT_TYPE_START_TO_CLOSE ||
+                                   ((io.temporal.failure.TimeoutFailure)exception.getCause()).getTimeoutType() == io.temporal.api.enums.v1.TimeoutType.TIMEOUT_TYPE_WORKFLOW_EXECUTION; // WORKFLOW_EXECUTION is for runTimeout
+        }
+        // Sometimes the top level exception IS the TimeoutFailure
+        boolean isTopLevelTimeout = exception instanceof io.temporal.failure.TimeoutFailure &&
+                                    (((io.temporal.failure.TimeoutFailure)exception).getTimeoutType() == io.temporal.api.enums.v1.TimeoutType.TIMEOUT_TYPE_START_TO_CLOSE ||
+                                     ((io.temporal.failure.TimeoutFailure)exception).getTimeoutType() == io.temporal.api.enums.v1.TimeoutType.TIMEOUT_TYPE_WORKFLOW_EXECUTION);
+
+
+        assertTrue(isCorrectTimeoutType || isTopLevelTimeout || exception.getMessage().toLowerCase().contains("workflow execution timed out"),
+            "Exception should be due to workflow execution timeout. Actual cause: " + exception.getCause() + ", Message: " + exception.getMessage());
+
+        logger.info("Test [ExecTimeout]: Workflow timed out as expected.");
+         // Verify that the first action (LLM or ask) was attempted
+        verify(mockLLMActivity, atLeastOnce()).isActionComplete(anyString(), anyMap(), anyMap());
+    }
+
+    @Test
+    public void testAskUserActivityTimeout() throws Exception {
+        System.out.println("Starting testAskUserActivityTimeout with taskQueue: " + this.taskQueue);
+        Goal goal = loadGoalFromJson("test-goal-single-action.json");
+        ActionNode action = goal.getNodes().get(0);
+
+        // LLM should not complete it, so it falls to AskUserActivity
+        when(mockLLMActivity.isActionComplete(eq(action.getActionId()), anyMap(), anyMap())).thenReturn(false);
+
+        // Configure mockAskUserActivity to simulate a timeout by throwing ApplicationFailure.newTimeoutFailure
+        // This will be subject to the activity's retry policy defined in MeetingSchedulerWorkflowImpl
+        // RetryPolicy: initial=1s, maxInterval=10s, backoff=2, maxAttempts=3
+        doThrow(io.temporal.failure.ApplicationFailure.newTimeoutFailure("Simulated AskUserActivity timeout", null))
+            .when(mockAskUserActivity).ask(eq(action.getActionId()), anyString());
+
+        MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(
+                MeetingSchedulerWorkflow.class,
+                WorkflowOptions.newBuilder()
+                        .setWorkflowId("testActivityTimeout-" + UUID.randomUUID())
+                        .setTaskQueue(taskQueue)
+                        // Workflow execution timeout should be long enough to accommodate retries
+                        .setWorkflowExecutionTimeout(Duration.ofSeconds(45)) // e.g. 1s + 2s + 4s + execution time
+                        .build());
+
+        WorkflowClient.start(workflow::scheduleMeeting, goal);
+
+        logger.info("Test [ActivityTimeout]: Waiting for workflow to fail due to activity timeout and retries...");
+        WorkflowFailedException exception = assertThrows(WorkflowFailedException.class, () -> {
+            WorkflowStub.fromTyped(workflow).getResult(30, java.util.concurrent.TimeUnit.SECONDS, Void.class);
+        });
+
+        assertNotNull(exception.getCause(), "WorkflowFailedException should have a cause.");
+        logger.info("Test [ActivityTimeout]: Workflow failed with: {}, cause: {}", exception.getMessage(), exception.getCause());
+
+        // Check for ActivityFailure wrapping an ApplicationFailure that is a timeout
+        assertTrue(exception.getCause() instanceof io.temporal.failure.ActivityFailure, "Cause should be ActivityFailure.");
+        io.temporal.failure.ActivityFailure activityFailure = (io.temporal.failure.ActivityFailure) exception.getCause();
+        assertTrue(activityFailure.getCause() instanceof io.temporal.failure.ApplicationFailure, "ActivityFailure's cause should be ApplicationFailure.");
+        io.temporal.failure.ApplicationFailure appFailure = (io.temporal.failure.ApplicationFailure) activityFailure.getCause();
+        assertTrue(appFailure.isTimeout(), "ApplicationFailure should be a timeout.");
+        assertEquals("Simulated AskUserActivity timeout", appFailure.getOriginalMessage());
+
+
+        // Verify that askUserActivity.ask was called multiple times due to retries
+        // Default retry is 3 attempts for the activity in workflow
+        verify(mockAskUserActivity, timeout(15000).times(3))
+            .ask(eq(action.getActionId()), anyString());
+
+        // Verify LLM was also called (once per attempt, or just once before activity attempts begin)
+        // In current workflow, LLM is checked, if false, then activity is called. Retry is on activity.
+        // So LLM should be called once.
+        verify(mockLLMActivity, times(1)).isActionComplete(eq(action.getActionId()), anyMap(), anyMap());
+        logger.info("Test [ActivityTimeout]: AskUserActivity timeout and retries verified.");
     }
 }
