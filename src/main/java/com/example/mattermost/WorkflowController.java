@@ -4,8 +4,10 @@ import io.temporal.client.WorkflowClient;
 import io.temporal.client.WorkflowOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import com.example.mattermost.UserResponsePayload; // Added import
 
 import java.util.HashMap;
 import java.util.Map;
@@ -53,7 +55,34 @@ public class WorkflowController {
             Map<String, String> errorResponse = new HashMap<>();
             errorResponse.put("error", "Failed to start workflow: " + e.getMessage());
             // Consider using a more specific error status code if appropriate
-            return ResponseEntity.status(500).body(errorResponse);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
+        }
+    }
+
+    @PostMapping("/user-response")
+    public ResponseEntity<Map<String, String>> handleUserResponse(@RequestBody UserResponsePayload payload) {
+        String workflowId = payload.getWorkflowId();
+        String actionId = payload.getActionId();
+        Map<String, Object> userInput = payload.getUserInput();
+
+        logger.info("Received user response for workflowId: {} and actionId: {}", workflowId, actionId);
+
+        try {
+            // Get a stub for the existing workflow instance
+            MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(MeetingSchedulerWorkflow.class, workflowId);
+
+            // Signal the workflow
+            workflow.onUserResponse(actionId, userInput);
+
+            logger.info("Signal onUserResponse sent successfully to workflowId: {}", workflowId);
+            Map<String, String> response = new HashMap<>();
+            response.put("message", "Signal onUserResponse sent successfully to workflowId_" + workflowId);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            logger.error("Error sending signal to workflowId: " + workflowId, e);
+            Map<String, String> response = new HashMap<>();
+            response.put("error", "Failed to send signal: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
         }
     }
 }

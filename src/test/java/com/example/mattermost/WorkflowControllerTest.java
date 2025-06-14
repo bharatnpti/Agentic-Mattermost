@@ -9,12 +9,14 @@ import org.mockito.ArgumentCaptor;
 // import org.mockito.MockedStatic; // Temporarily remove static mock
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest; // Changed import
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.Collections;
+import java.util.HashMap; // Added for payload
 import java.util.Map;
 import java.util.UUID;
 
@@ -81,5 +83,52 @@ public class WorkflowControllerTest {
             // Temporarily disabling this verification
             // mockedStaticWorkflowClient.verify(() -> WorkflowClient.start(any(), eq(sampleGoal)), times(1));
         // }
+    }
+
+    @Test
+    public void testHandleUserResponse_Success() throws Exception {
+        UserResponsePayload payload = new UserResponsePayload();
+        payload.setWorkflowId("testWorkflowId");
+        payload.setActionId("testActionId");
+        Map<String, Object> userInput = new HashMap<>();
+        userInput.put("key", "value");
+        payload.setUserInput(userInput);
+
+        MeetingSchedulerWorkflow mockWorkflow = mock(MeetingSchedulerWorkflow.class);
+        when(workflowClient.newWorkflowStub(MeetingSchedulerWorkflow.class, "testWorkflowId"))
+                .thenReturn(mockWorkflow);
+
+        mockMvc.perform(post("/api/v1/workflow/user-response")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message", is("Signal onUserResponse sent successfully to workflowId_testWorkflowId")));
+
+        verify(mockWorkflow).onUserResponse(eq("testActionId"), eq(userInput));
+    }
+
+    @Test
+    public void testHandleUserResponse_Failure() throws Exception {
+        UserResponsePayload payload = new UserResponsePayload();
+        payload.setWorkflowId("testWorkflowIdFailure");
+        payload.setActionId("testActionIdFailure");
+        Map<String, Object> userInput = new HashMap<>();
+        userInput.put("reason", "something went wrong");
+        payload.setUserInput(userInput);
+
+        MeetingSchedulerWorkflow mockWorkflow = mock(MeetingSchedulerWorkflow.class);
+        when(workflowClient.newWorkflowStub(MeetingSchedulerWorkflow.class, "testWorkflowIdFailure"))
+                .thenReturn(mockWorkflow);
+
+        // Configure the mock workflow to throw an exception when onUserResponse is called
+        doThrow(new RuntimeException("Signal failed")).when(mockWorkflow).onUserResponse(anyString(), anyMap());
+
+        mockMvc.perform(post("/api/v1/workflow/user-response")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isInternalServerError()) // Expecting 500
+                .andExpect(jsonPath("$.error", is("Failed to send signal: Signal failed")));
+
+        verify(mockWorkflow).onUserResponse(eq("testActionIdFailure"), eq(userInput));
     }
 }
