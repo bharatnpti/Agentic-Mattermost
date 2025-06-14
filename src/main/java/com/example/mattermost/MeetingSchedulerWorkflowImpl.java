@@ -27,6 +27,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
     // Activities
     private final AskUserActivity askUserActivity;
     private final ValidateInputActivity validateInputActivity;
+    private final LLMActivity llmActivity;
 
     public MeetingSchedulerWorkflowImpl() {
         // Define retry options for activities
@@ -44,6 +45,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
 
         this.askUserActivity = Workflow.newActivityStub(AskUserActivity.class, defaultActivityOptions);
         this.validateInputActivity = Workflow.newActivityStub(ValidateInputActivity.class, defaultActivityOptions);
+        this.llmActivity = Workflow.newActivityStub(LLMActivity.class, defaultActivityOptions);
     }
 
     @Override
@@ -97,24 +99,70 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                     currentGoal.getNodeById(action.getActionId()).setActionStatus(ActionStatus.PROCESSING);
                     progressMade = true;
 
-                    // For simplicity, this mock POC will assume all actions might need user input.
-                    // A real implementation would check actionParams or type.
-                    String prompt = generatePrompt(action);
-                    String resolvedPrompt = resolvePlaceholders(prompt, actionOutputs);
-                    logger.info("Main loop: Generated prompt for action {}: '{}'", action.getActionId(), resolvedPrompt);
+                    // Attempt to complete with LLM if configured
+                    boolean llmAttempted = false;
+                    boolean llmCompleted = false;
 
-                    try {
-                        logger.info("Main loop: About to call askUserActivity.ask for action {}", action.getActionId());
-                        askUserActivity.ask(action.getActionId(), resolvedPrompt);
-                        logger.info("Main loop: askUserActivity.ask called for action {}. Setting status to WAITING_FOR_INPUT.", action.getActionId());
-                        actionStatuses.put(action.getActionId(), ActionStatus.WAITING_FOR_INPUT);
-                        currentGoal.getNodeById(action.getActionId()).setActionStatus(ActionStatus.WAITING_FOR_INPUT);
-                        waitingForUserInputMap.put(action.getActionId(), prompt);
-                        logger.info("Action {} is now WAITING_FOR_INPUT.", action.getActionId());
-                    } catch (Exception e) {
-                        logger.error("Error calling askUserActivity for action {}: {}", action.getActionId(), e.getMessage());
-                        actionStatuses.put(action.getActionId(), ActionStatus.FAILED);
-                        currentGoal.getNodeById(action.getActionId()).setActionStatus(ActionStatus.FAILED);
+                    Map<String, Object> actionParams = action.getActionParams();
+                    if (actionParams != null && Boolean.TRUE.equals(actionParams.get("llm_can_complete"))) {
+                        llmAttempted = true;
+                        logger.info("Main loop: Action {} is configured for LLM completion. Attempting.", action.getActionId());
+                        try {
+                            if (llmActivity.isActionComplete(action.getActionId(), actionParams, actionOutputs)) {
+                                logger.info("Main loop: LLM completed action {}.", action.getActionId());
+                                actionStatuses.put(action.getActionId(), ActionStatus.COMPLETED);
+                                currentGoal.getNodeById(action.getActionId()).setActionStatus(ActionStatus.COMPLETED);
+                                // Optionally, add LLM output
+                                actionOutputs.get(action.getActionId()).put("llm_output", "Completed by LLM mock");
+                                llmCompleted = true;
+                            } else {
+                                logger.info("Main loop: LLM did not complete action {}.", action.getActionId());
+                            }
+                        } catch (Exception e) {
+                            logger.error("Error calling LLMActivity for action {}: {}", action.getActionId(), e.getMessage());
+                            // Depending on policy, could set to FAILED or allow fallback to user input
+                            // For now, log error and let it fall through to user input if prompt is available
+                        }
+                    }
+
+                    // If not completed by LLM, try user input if a prompt is available
+                    if (!llmCompleted) {
+                        String prompt = generatePrompt(action); // Generates prompt (checks actionParams for "prompt_message")
+                        if (prompt != null && !prompt.startsWith("Please provide input for action: ") || (actionParams != null && actionParams.containsKey("prompt_message"))) { // Check if a specific prompt is set
+                            String resolvedPrompt = resolvePlaceholders(prompt, actionOutputs);
+                            logger.info("Main loop: Action {} not completed by LLM or not configured for LLM. Proceeding with user input. Prompt: '{}'", action.getActionId(), resolvedPrompt);
+                            try {
+                                logger.info("Main loop: About to call askUserActivity.ask for action {}", action.getActionId());
+                                askUserActivity.ask(action.getActionId(), resolvedPrompt);
+                                logger.info("Main loop: askUserActivity.ask called for action {}. Setting status to WAITING_FOR_INPUT.", action.getActionId());
+                                actionStatuses.put(action.getActionId(), ActionStatus.WAITING_FOR_INPUT);
+                                currentGoal.getNodeById(action.getActionId()).setActionStatus(ActionStatus.WAITING_FOR_INPUT);
+                                waitingForUserInputMap.put(action.getActionId(), prompt); // Store original prompt for re-prompting
+                                logger.info("Action {} is now WAITING_FOR_INPUT.", action.getActionId());
+                            } catch (Exception e) {
+                                logger.error("Error calling askUserActivity for action {}: {}", action.getActionId(), e.getMessage());
+                                actionStatuses.put(action.getActionId(), ActionStatus.FAILED);
+                                currentGoal.getNodeById(action.getActionId()).setActionStatus(ActionStatus.FAILED);
+                            }
+                        } else {
+                            // No LLM completion and no specific prompt configured.
+                            // If llmAttempted, it means LLM was supposed to do it but didn't.
+                            // If not llmAttempted, it means it was never an LLM task and had no prompt.
+                            // This could be an action that completes on its own or a misconfiguration.
+                            if (llmAttempted) {
+                                logger.warn("Main loop: Action {} was LLM-attempted but not completed, and no fallback prompt. Marking FAILED.", action.getActionId());
+                                actionStatuses.put(action.getActionId(), ActionStatus.FAILED);
+                                currentGoal.getNodeById(action.getActionId()).setActionStatus(ActionStatus.FAILED);
+                            } else {
+                                logger.info("Main loop: Action {} has no LLM configuration and no prompt. Assuming it's a passively completed action or requires different handling. Current logic will not actively process it further unless status changes externally.", action.getActionId());
+                                // For now, leave its status as PROCESSING. It might be completed by an external signal or another mechanism if not user/LLM.
+                                // Or, if this state is unintended, it should be marked FAILED or SKIPPED based on workflow policy.
+                                // Let's be stricter for now: if it reached here and couldn't be handled, mark FAILED.
+                                logger.warn("Main loop: Action {} has no LLM config, no prompt. Marking FAILED.", action.getActionId());
+                                actionStatuses.put(action.getActionId(), ActionStatus.FAILED);
+                                currentGoal.getNodeById(action.getActionId()).setActionStatus(ActionStatus.FAILED);
+                            }
+                        }
                     }
                 }
             }

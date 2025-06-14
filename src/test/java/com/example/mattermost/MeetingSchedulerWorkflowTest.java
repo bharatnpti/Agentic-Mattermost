@@ -27,6 +27,7 @@ import java.util.UUID;
 import java.util.List; // Added for actionIdCaptorAsk.getAllValues()
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 import org.slf4j.Logger;
@@ -46,6 +47,7 @@ public class MeetingSchedulerWorkflowTest {
 
     private AskUserActivity mockAskUserActivity;
     private ValidateInputActivity mockValidateInputActivity;
+    private LLMActivity mockLLMActivity;
     private WorkflowClient workflowClient;
     private Worker worker;
     private String taskQueue;
@@ -67,6 +69,8 @@ public class MeetingSchedulerWorkflowTest {
         assertNotNull(mockAskUserActivity, "mockAskUserActivity should be initialized in setUp.");
         mockValidateInputActivity = mock(ValidateInputActivity.class);
         assertNotNull(mockValidateInputActivity, "mockValidateInputActivity should be initialized in setUp.");
+        mockLLMActivity = mock(LLMActivity.class);
+        assertNotNull(mockLLMActivity, "mockLLMActivity should be initialized in setUp.");
 
         worker = testEnv.getWorkerFactory().newWorker(taskQueue); // Changed getWorker to newWorker
         assertNotNull(worker, "worker should be initialized in setUp.");
@@ -79,8 +83,10 @@ public class MeetingSchedulerWorkflowTest {
             (actionId, prompt) -> mockAskUserActivity.ask(actionId, prompt);
         ValidateInputActivity validateInputActivityDelegator =
             (actionId, userInput, actionParams) -> mockValidateInputActivity.validate(actionId, userInput, actionParams);
+        LLMActivity llmActivityDelegator =
+            (actionId, actionParams, currentActionOutputs) -> mockLLMActivity.isActionComplete(actionId, actionParams, currentActionOutputs);
 
-        worker.registerActivitiesImplementations(askUserActivityDelegator, validateInputActivityDelegator);
+        worker.registerActivitiesImplementations(askUserActivityDelegator, validateInputActivityDelegator, llmActivityDelegator);
 
         // Configure activity options for mocks if needed, though direct mock control is often enough
         ActivityOptions activityOptions = ActivityOptions.newBuilder()
@@ -120,6 +126,9 @@ public class MeetingSchedulerWorkflowTest {
         assertNotNull(mockValidateInputActivity, "mockValidateInputActivity should not be null at start of test method.");
         assertNotNull(worker, "worker should not be null at start of test method.");
         assertNotNull(workflowClient, "workflowClient should not be null at start of test method.");
+
+        // Ensure LLM does not interfere with these user-input focused tests
+        when(mockLLMActivity.isActionComplete(anyString(), anyMap(), anyMap())).thenReturn(false);
 
         Goal goal = loadGoalFromJson("test-goal-simple.json"); // A simplified goal for testing
 
@@ -183,6 +192,9 @@ public class MeetingSchedulerWorkflowTest {
         assertNotNull(mockAskUserActivity, "mockAskUserActivity should not be null at start of test method.");
         assertNotNull(mockValidateInputActivity, "mockValidateInputActivity should not be null at start of test method.");
         assertNotNull(worker, "worker should not be null at start of test method.");
+
+        // Ensure LLM does not interfere with these user-input focused tests
+        when(mockLLMActivity.isActionComplete(anyString(), anyMap(), anyMap())).thenReturn(false);
 
         Goal goal = loadGoalFromJson("test-goal-single-action.json"); // Goal with one action
         ActionNode singleAction = goal.getNodes().get(0);
@@ -248,6 +260,9 @@ public class MeetingSchedulerWorkflowTest {
         assertNotNull(mockAskUserActivity, "mockAskUserActivity should not be null at start of test method.");
         assertNotNull(mockValidateInputActivity, "mockValidateInputActivity should not be null at start of test method.");
         assertNotNull(worker, "worker should not be null at start of test method.");
+
+        // Ensure LLM does not interfere with these user-input focused tests
+        when(mockLLMActivity.isActionComplete(anyString(), anyMap(), anyMap())).thenReturn(false);
 
         Goal goal = loadGoalFromJson("example-goal.json"); // Use the more complex goal
 
@@ -347,5 +362,163 @@ public class MeetingSchedulerWorkflowTest {
         // This highlights a potential refinement in how prompts are constructed and resolved from actionParams.
         // For now, we'll assert that the action was called.
         // WorkflowStub.getResult() would throw an exception if not completed successfully.
+    }
+
+    @Test
+    public void testLLMCompletesActionSuccessfully() throws Exception {
+        System.out.println("Starting testLLMCompletesActionSuccessfully with taskQueue: " + this.taskQueue);
+        Goal goal = loadGoalFromJson("test-goal-single-action.json"); // Re-use simple goal
+        ActionNode action = goal.getNodes().get(0);
+        // Modify action to be LLM-completable
+        action.setActionParams(new HashMap<>(Map.of("llm_can_complete", true, "prompt_message", "This prompt should not be used.")));
+        goal.getNodes().set(0, action);
+
+
+        // Mock LLM behavior
+        when(mockLLMActivity.isActionComplete(eq(action.getActionId()), anyMap(), anyMap())).thenReturn(true);
+
+        MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(
+                MeetingSchedulerWorkflow.class,
+                WorkflowOptions.newBuilder()
+                        .setWorkflowId("testLLMSuccess-" + UUID.randomUUID())
+                        .setTaskQueue(taskQueue)
+                        .build());
+
+        WorkflowClient.start(workflow::scheduleMeeting, goal);
+
+        logger.info("Test: Waiting for workflow completion for testLLMCompletesActionSuccessfully...");
+        WorkflowStub.fromTyped(workflow).getResult(10, java.util.concurrent.TimeUnit.SECONDS, Void.class);
+        logger.info("Test: Workflow completed for testLLMCompletesActionSuccessfully.");
+
+        // Verify LLMActivity was called
+        verify(mockLLMActivity, times(1)).isActionComplete(eq(action.getActionId()), anyMap(), anyMap());
+        // Verify AskUserActivity was NOT called for this action
+        verify(mockAskUserActivity, never()).ask(eq(action.getActionId()), anyString());
+        // Verify ValidateInputActivity was NOT called as LLM bypassed user input
+        verify(mockValidateInputActivity, never()).validate(eq(action.getActionId()), anyMap(), anyMap());
+    }
+
+    @Test
+    public void testLLMFailsToCompleteActionFallsBackToUserInput() throws Exception {
+        System.out.println("Starting testLLMFailsToCompleteActionFallsBackToUserInput with taskQueue: " + this.taskQueue);
+        Goal goal = loadGoalFromJson("test-goal-single-action.json");
+        ActionNode action = goal.getNodes().get(0);
+        String expectedPrompt = "Please provide input for " + action.getActionName();
+        action.setActionParams(new HashMap<>(Map.of(
+            "llm_can_complete", true,
+            "prompt_message", expectedPrompt // Ensure a prompt is there for fallback
+        )));
+        goal.getNodes().set(0, action);
+
+        // Mock LLM behavior
+        when(mockLLMActivity.isActionComplete(eq(action.getActionId()), anyMap(), anyMap())).thenReturn(false);
+        // Mock user input path
+        doNothing().when(mockAskUserActivity).ask(eq(action.getActionId()), anyString());
+        when(mockValidateInputActivity.validate(eq(action.getActionId()), anyMap(), anyMap())).thenReturn(true);
+
+
+        MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(
+                MeetingSchedulerWorkflow.class,
+                WorkflowOptions.newBuilder()
+                        .setWorkflowId("testLLMFallback-" + UUID.randomUUID())
+                        .setTaskQueue(taskQueue)
+                        .build());
+
+        WorkflowClient.start(workflow::scheduleMeeting, goal);
+
+        // Wait for askUserActivity to be called (fallback)
+        ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
+        verify(mockAskUserActivity, timeout(5000).times(1)).ask(eq(action.getActionId()), promptCaptor.capture());
+        assertEquals(expectedPrompt, promptCaptor.getValue());
+
+        // Send user response
+        workflow.onUserResponse(action.getActionId(), Map.of("data", "user_provided_data"));
+
+        logger.info("Test: Waiting for workflow completion for testLLMFailsToCompleteActionFallsBackToUserInput...");
+        WorkflowStub.fromTyped(workflow).getResult(10, java.util.concurrent.TimeUnit.SECONDS, Void.class);
+        logger.info("Test: Workflow completed for testLLMFailsToCompleteActionFallsBackToUserInput.");
+
+        verify(mockLLMActivity, times(1)).isActionComplete(eq(action.getActionId()), anyMap(), anyMap());
+        verify(mockAskUserActivity, times(1)).ask(eq(action.getActionId()), eq(expectedPrompt));
+        verify(mockValidateInputActivity, times(1)).validate(eq(action.getActionId()), anyMap(), anyMap());
+    }
+
+    @Test
+    public void testLLMConfiguredButNoPromptActionFails() throws Exception {
+        System.out.println("Starting testLLMConfiguredButNoPromptActionFails with taskQueue: " + this.taskQueue);
+        Goal goal = loadGoalFromJson("test-goal-single-action.json");
+        ActionNode action = goal.getNodes().get(0);
+        // Configure for LLM, but remove any specific prompt_message.
+        // The generatePrompt() in workflow would make a generic one, but our workflow logic for this case is:
+        // if LLM fails AND (no specific prompt was found), then fail the action.
+        Map<String, Object> params = new HashMap<>();
+        params.put("llm_can_complete", true);
+        // Explicitly do NOT put "prompt_message"
+        action.setActionParams(params);
+        goal.getNodes().set(0, action);
+
+        when(mockLLMActivity.isActionComplete(eq(action.getActionId()), anyMap(), anyMap())).thenReturn(false);
+
+        MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(
+                MeetingSchedulerWorkflow.class,
+                WorkflowOptions.newBuilder()
+                        .setWorkflowId("testLLMNoPromptFail-" + UUID.randomUUID())
+                        .setTaskQueue(taskQueue)
+                        .build());
+
+        WorkflowClient.start(workflow::scheduleMeeting, goal);
+
+        // The workflow should "complete" in the sense that it finishes execution,
+        // but the action within it should have failed.
+        // Depending on the workflow's overall error handling and if other actions exist,
+        // WorkflowStub.getResult() might throw an exception if the goal isn't fully achieved
+        // or if the failure isn't gracefully handled to allow overall completion.
+        // For a single-action goal where that action fails, the workflow itself might be considered "failed" by some definitions.
+        // Let's assume for now the workflow runs to its end, and we'll check action status via a query or by inspecting logs if possible.
+        // However, the current MeetingSchedulerWorkflowImpl doesn't have query methods for action statuses.
+        // And if the only action fails, isWorkflowComplete() might remain false, leading to timeout here.
+        // The workflow logic marks action FAILED. If isWorkflowComplete then becomes true (e.g. no other actions), it will finish.
+        // If it's a single action goal, and it fails, isWorkflowComplete() should see it as "no non-completed/skipped actions" = false,
+        // but also "no processable actions". This might lead to the await() then recheck, and if it's still stuck, it might be an issue.
+        // The isWorkflowComplete() has logic to mark SKIPPED for failed dependencies.
+        // If an action is FAILED, it's not PENDING or WAITING, so getProcessableActions is empty.
+        // isWorkflowComplete counts non-COMPLETED/SKIPPED. A FAILED action is not COMPLETED/SKIPPED.
+        // So, the workflow will likely not complete naturally if its only action FAILED.
+        // It will wait at Workflow.await() indefinitely or until workflow timeout.
+
+        // We expect the workflow to effectively get stuck or not complete "successfully" in terms of goal achievement.
+        // For this test, let's verify the LLM was called, askUser was not, and then expect a timeout or specific exception
+        // if the workflow is designed to fail under such conditions.
+        // The current workflow's main loop `while(!isWorkflowComplete())` will continue if the failed action means not complete.
+        // The `Workflow.await` condition might not be met to exit if `isWorkflowComplete` remains false.
+
+        // Let's verify calls and then expect the workflow to not complete cleanly within a short time.
+        verify(mockLLMActivity, timeout(5000).times(1)).isActionComplete(eq(action.getActionId()), anyMap(), anyMap());
+        verify(mockAskUserActivity, never()).ask(eq(action.getActionId()), anyString());
+
+        logger.info("Test: Expecting workflow to not complete successfully or timeout for testLLMConfiguredButNoPromptActionFails.");
+
+        try {
+            WorkflowStub.fromTyped(workflow).getResult(5, java.util.concurrent.TimeUnit.SECONDS, Void.class);
+            // If it completes, it means the FAILED status was handled in a way that satisfies isWorkflowComplete()
+            // This would be unexpected if the FAILED action was the only one and not SKIPPED.
+            // The current isWorkflowComplete checks: `status != ActionStatus.COMPLETED && status != ActionStatus.SKIPPED`.
+            // A FAILED action means nonCompletedCount > 0.
+            // So, the loop `while(!isWorkflowComplete())` continues.
+            // And `getProcessableActions()` will be empty.
+            // So `Workflow.await` will be hit. Its condition is `!getProcessableActions().isEmpty() || isWorkflowComplete()`.
+            // This will be `false || false` -> so it will wait.
+            fail("Workflow should not complete successfully when the only action fails this way and is not handled to allow completion.");
+        } catch (WorkflowFailedException e) {
+            // This would be an acceptable outcome if the workflow itself is designed to fail.
+            // However, our current workflow doesn't explicitly fail itself; it just might get stuck if an action fails.
+            // The most likely outcome is a timeout from getResult.
+            logger.info("Test: Workflow failed as expected (WorkflowFailedException): " + e.getMessage());
+        } catch (Exception e) { // Catches TimeoutException from getResult
+            logger.info("Test: Workflow timed out as expected or other error: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+            // This is the more expected outcome for a stuck workflow due to an unhandled failed state.
+            assertTrue(e instanceof io.temporal.client.WorkflowException || e.getMessage().contains("timeout"), "Expected workflow to timeout or throw WorkflowException.");
+        }
+        // To properly test the FAILED state, one would ideally have a query method on the workflow.
     }
 }
