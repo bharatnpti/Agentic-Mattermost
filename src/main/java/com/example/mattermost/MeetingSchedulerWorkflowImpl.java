@@ -73,7 +73,29 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
         // The logic for processing actions will be handled by evaluateAndRunProcessableActions.
         evaluateAndRunProcessableActions();
 
-        logger.info("Workflow logic after initial action processing for goal: {}. Final outputs (will be updated by signals): {}", currentGoal.getGoal(), actionOutputs);
+        // Wait until the workflow is complete (all actions are COMPLETED or SKIPPED, or truly stuck)
+        Workflow.await(this::isWorkflowComplete);
+
+        // After awaiting completion, check if any actions ended in a FAILED state.
+        boolean anyActionFailed = actionStatuses.values().stream()
+            .anyMatch(status -> status == ActionStatus.FAILED);
+
+        if (anyActionFailed) {
+            // Optionally, gather more details about which actions failed.
+            String failedActionDetails = actionStatuses.entrySet().stream()
+                .filter(entry -> entry.getValue() == ActionStatus.FAILED)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.joining(", "));
+            logger.error("Workflow for goal '{}' completed with FAILED actions: [{}]. Throwing error.",
+                currentGoal.getGoal(), failedActionDetails);
+            // Ensure final outputs are set before throwing.
+            this.currentGoal.setActionOutputs(this.actionOutputs);
+            throw Workflow.newApplicationFailure(
+                "Workflow completed with one or more FAILED actions: " + failedActionDetails,
+                "WorkflowFailure");
+        }
+
+        logger.info("Workflow completed successfully for goal: {}. Final outputs (will be updated by signals): {}", currentGoal.getGoal(), actionOutputs);
         // Ensure final outputs are set in the Goal object
         this.currentGoal.setActionOutputs(this.actionOutputs);
     }
@@ -351,7 +373,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
         long nonCompletedCount = currentGoal.getNodes().stream()
             .filter(node -> {
                 ActionStatus status = actionStatuses.get(node.getActionId());
-                return status != ActionStatus.COMPLETED && status != ActionStatus.SKIPPED;
+                return status != ActionStatus.COMPLETED && status != ActionStatus.SKIPPED && status != ActionStatus.FAILED;
             })
             .count();
         if (nonCompletedCount == 0) return true;

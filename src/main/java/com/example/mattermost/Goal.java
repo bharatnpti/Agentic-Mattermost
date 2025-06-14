@@ -12,8 +12,8 @@ public class Goal {
     private List<ActionNode> nodes;
     private List<Relationship> relationships;
 
-    // Transient field to store action outputs, not part of JSON
-    private transient Map<String, Map<String, Object>> actionOutputs;
+    // Field to store action outputs, should be part of JSON for workflow state
+    private Map<String, Map<String, Object>> actionOutputs;
 
 
     // Constructors

@@ -38,12 +38,38 @@ public class MeetingSchedulerWorkflowTest {
 
     private static final Logger logger = LoggerFactory.getLogger(MeetingSchedulerWorkflowTest.class);
 
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import io.temporal.client.WorkflowClientOptions;
+import io.temporal.common.converter.DataConverter;
+import io.temporal.common.converter.JacksonJsonPayloadConverter;
+import io.temporal.worker.WorkerFactoryOptions;
+
+public class MeetingSchedulerWorkflowTest {
+
+    private static final Logger logger = LoggerFactory.getLogger(MeetingSchedulerWorkflowTest.class);
+
+    // Configure ObjectMapper for Temporal's DataConverter
+    private static final ObjectMapper temporalObjectMapper = new ObjectMapper()
+            .registerModule(new JavaTimeModule())
+            // Configure as needed, e.g., for enums, though defaults are often fine
+            // .configure(SerializationFeature.WRITE_ENUMS_USING_TO_STRING, true)
+            // .configure(DeserializationFeature.READ_ENUMS_USING_TO_STRING, true)
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false); // Already in @JsonIgnoreProperties
+
+    private static final DataConverter jacksonDataConverter = new JacksonJsonPayloadConverter(temporalObjectMapper);
+
     @RegisterExtension
     public static final TestWorkflowExtension testWorkflowExtension =
             TestWorkflowExtension.newBuilder()
                     .setWorkflowTypes(MeetingSchedulerWorkflowImpl.class)
-                    // Use mock activities for more control
                     .setDoNotStart(true) // We will start worker manually after registering mocks
+                    .setWorkflowClientOptions(WorkflowClientOptions.newBuilder()
+                            .setDataConverter(jacksonDataConverter)
+                            .build())
+                    .setWorkerFactoryOptions(WorkerFactoryOptions.newBuilder()
+                            .setDataConverter(jacksonDataConverter)
+                            .build())
                     .build();
 
     private AskUserActivity mockAskUserActivity;
@@ -226,17 +252,19 @@ public class MeetingSchedulerWorkflowTest {
         logger.info("Test: Verifying initial ask for {}", singleAction.getActionId());
         verify(mockAskUserActivity, timeout(5000).times(1)).ask(eq(singleAction.getActionId()), promptCaptor1.capture());
         assertTrue(promptCaptor1.getValue().contains(goal.getNodeById(singleAction.getActionId()).getActionParams().get("prompt_message").toString()));
+        // The first bad input signal is sent by the next line, the log message below is for that signal.
         logger.info("Test: Initial ask for {} verified. Sending bad input.", singleAction.getActionId());
 
-        // Signal 1 (leads to validation failure)
-        workflow.onUserResponse(singleAction.getActionId(), Map.of("input", "bad_initial_input"));
-        logger.info("Test: Bad input signal sent for {}.", singleAction.getActionId());
+        // Signal 1 (leads to validation failure) - This is the first bad input signal. The duplicate is removed.
+        // The log line for this signal was above.
+        // workflow.onUserResponse(singleAction.getActionId(), Map.of("input", "bad_initial_input")); // This was the duplicate line removed
+        // logger.info("Test: Bad input signal sent for {}.", singleAction.getActionId()); // This was the duplicate log line removed
 
         // Verify re-prompt after validation failure
         ArgumentCaptor<String> promptCaptor2 = ArgumentCaptor.forClass(String.class);
         logger.info("Test: Verifying re-prompt for {} after bad input.", singleAction.getActionId());
         // This is the second call to ask() for this specific actionId in sequence
-        verify(mockAskUserActivity, timeout(5000).times(1)).ask(eq(singleAction.getActionId()), promptCaptor2.capture());
+        verify(mockAskUserActivity, timeout(5000).times(2)).ask(eq(singleAction.getActionId()), promptCaptor2.capture());
         assertTrue(promptCaptor2.getValue().contains("Your previous input was not sufficient."));
         logger.info("Test: Re-prompt for {} verified. Sending good input.", singleAction.getActionId());
 
@@ -497,35 +525,20 @@ public class MeetingSchedulerWorkflowTest {
         verify(mockLLMActivity, timeout(5000).times(1)).isActionComplete(eq(action.getActionId()), anyMap(), anyMap());
         verify(mockAskUserActivity, never()).ask(eq(action.getActionId()), anyString());
 
-        logger.info("Test: Expecting workflow to not complete successfully or timeout for testLLMConfiguredButNoPromptActionFails.");
+        logger.info("Test: Verifying workflow fails as expected when an action fails, as the workflow now throws an ApplicationFailure.");
+        // Workflow execution should fail because the action fails and the workflow throws an ApplicationFailure.
+        WorkflowFailedException e = assertThrows(WorkflowFailedException.class,
+            () -> WorkflowStub.fromTyped(workflow).getResult(10, java.util.concurrent.TimeUnit.SECONDS, Void.class),
+            "Workflow execution should fail if an action within it fails and is not handled by the workflow to allow completion.");
 
-        try {
-            WorkflowStub.fromTyped(workflow).getResult(5, java.util.concurrent.TimeUnit.SECONDS, Void.class);
-            // If it completes, it means the FAILED status was handled in a way that satisfies isWorkflowComplete()
-            // This would be unexpected if the FAILED action was the only one and not SKIPPED.
-            // The current isWorkflowComplete checks: `status != ActionStatus.COMPLETED && status != ActionStatus.SKIPPED`.
-            // A FAILED action means nonCompletedCount > 0.
-            // So, the loop `while(!isWorkflowComplete())` continues.
-            // And `getProcessableActions()` will be empty.
-            // So `Workflow.await` will be hit. Its condition is `!getProcessableActions().isEmpty() || isWorkflowComplete()`.
-            // This will be `false || false` -> so it will wait.
-            fail("Workflow should not complete successfully when the only action fails this way and is not handled to allow completion.");
-        } catch (WorkflowFailedException e) {
-            // This would be an acceptable outcome if the workflow itself is designed to fail.
-            // However, our current workflow doesn't explicitly fail itself; it just might get stuck if an action fails.
-            // The most likely outcome is a timeout from getResult.
-            logger.info("Test: Workflow failed as expected (WorkflowFailedException): " + e.getMessage());
-        } catch (Exception e) { // Catches TimeoutException from getResult
-            logger.info("Test: Workflow timed out as expected or other error: " + e.getClass().getSimpleName() + " - " + e.getMessage());
-            // This is the more expected outcome for a stuck workflow due to an unhandled failed state.
-            assertTrue(e instanceof io.temporal.client.WorkflowException || e.getMessage().contains("timeout"), "Expected workflow to timeout or throw WorkflowException.");
-        }
-        // To properly test the FAILED state, one would ideally have a query method on the workflow.
-        // With the refactor, the workflow should complete, as the failed action doesn't block the workflow method itself.
-        logger.info("Test: Verifying workflow completes even if the action fails internally.");
-        assertDoesNotThrow(() -> WorkflowStub.fromTyped(workflow).getResult(10, java.util.concurrent.TimeUnit.SECONDS, Void.class),
-            "Workflow should complete successfully even if an action fails internally, as the workflow method itself doesn't fail.");
+        // Check that the cause of WorkflowFailedException is an ApplicationFailure.
+        Throwable cause = e.getCause();
+        assertNotNull(cause, "WorkflowFailedException should have a cause.");
+        assertTrue(cause instanceof io.temporal.failure.ApplicationFailure, "Cause should be ApplicationFailure. Actual: " + cause.getClass().getName());
 
+        // Check the message of the ApplicationFailure.
+        assertTrue(cause.getMessage().contains("Workflow completed with one or more FAILED actions: single_action_001"),
+            "Exception message should indicate which action(s) failed. Actual: " + cause.getMessage());
     }
 
     @Test

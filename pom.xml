@@ -22,9 +22,9 @@
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
         <temporal.sdk.version>1.22.3</temporal.sdk.version>
-        <jackson.version>2.15.2</jackson.version>
+        <!-- <jackson.version>2.15.2</jackson.version> --> <!-- Let Spring Boot manage Jackson version -->
         <slf4j.version>2.0.7</slf4j.version>
-        <junit.jupiter.version>5.10.0</junit.jupiter.version>
+        <junit.jupiter.version>5.8.2</junit.jupiter.version> <!-- Align with Spring Boot 2.7.17 parent -->
     </properties>
 
     <dependencies>
@@ -46,10 +46,11 @@
                     <groupId>org.junit.vintage</groupId>
                     <artifactId>junit-vintage-engine</artifactId>
                 </exclusion>
-                <exclusion>
-                    <groupId>org.junit.jupiter</groupId>
-                    <artifactId>junit-jupiter</artifactId>
-                </exclusion>
+                <!-- Removing this exclusion as it might be problematic for test discovery -->
+                <!-- <exclusion> -->
+                <!--     <groupId>org.junit.jupiter</groupId> -->
+                <!--     <artifactId>junit-jupiter</artifactId> -->
+                <!-- </exclusion> -->
             </exclusions>
         </dependency>
 
@@ -64,12 +65,12 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>${jackson.version}</version>
+            <!-- <version>${jackson.version}</version> --> <!-- Version managed by Spring Boot parent -->
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.datatype</groupId>
             <artifactId>jackson-datatype-jsr310</artifactId>
-            <version>${jackson.version}</version>
+            <!-- <version>${jackson.version}</version> --> <!-- Version managed by Spring Boot parent -->
         </dependency>
 
         <!-- Logging -->
@@ -94,13 +95,13 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
-            <version>${junit.jupiter.version}</version>
+            <version>${junit.jupiter.version}</version> <!-- Use defined property -->
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-engine</artifactId>
-            <version>${junit.jupiter.version}</version>
+            <version>${junit.jupiter.version}</version> <!-- Use defined property -->
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -129,7 +130,7 @@
                     <dependency>
                         <groupId>org.junit.jupiter</groupId>
                         <artifactId>junit-jupiter-engine</artifactId>
-                        <version>${junit.jupiter.version}</version>
+                        <version>${junit.jupiter.version}</version> <!-- Use defined property -->
                     </dependency>
                     <dependency>
                         <groupId>org.apache.maven.surefire</groupId>
