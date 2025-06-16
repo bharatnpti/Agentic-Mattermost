@@ -1,0 +1,30 @@
+spring:
+    ai:
+        azure:
+            openai:
+                endpoint: https://api.openai.com/v1
+        openai:
+            api-key: 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
+        mcp:
+            client:
+                sse:
+                    connections:
+                        server1:
+                            url: http://localhost:8081
+                type: sync
+                request-timeout: 60s
+#    datasource:
+#        hikari:
+#            connectionTimeout: 20000
+#            maximumPoolSize: 5
+#        password: mysecretpassword
+#        url: jdbc:postgresql://localhost:5432/postgres
+#        username: postgres
+#    jpa:
+#        hibernate:
+#            ddl-auto: create-drop
+#    neo4j:
+#        authentication:
+#            password: secretpass
+#            username: neo4j
+#        uri: bolt://localhost:7687

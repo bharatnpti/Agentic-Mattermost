@@ -63,7 +63,7 @@ public class WorkflowController {
     public ResponseEntity<Map<String, String>> handleUserResponse(@RequestBody UserResponsePayload payload) {
         String workflowId = payload.getWorkflowId();
         String actionId = payload.getActionId();
-        Map<String, Object> userInput = payload.getUserInput();
+        String userInput = payload.getUserInput();
 
         logger.info("Received user response for workflowId: {} and actionId: {}", workflowId, actionId);
 

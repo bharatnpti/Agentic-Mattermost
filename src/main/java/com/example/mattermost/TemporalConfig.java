@@ -7,10 +7,9 @@ import io.temporal.worker.Worker;
 import io.temporal.worker.WorkerFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.beans.factory.annotation.Autowired;
-import javax.annotation.PostConstruct;
 
 @Configuration
 public class TemporalConfig {
@@ -22,7 +21,10 @@ public class TemporalConfig {
     private static final String TASK_QUEUE = MeetingSchedulerAppMain.TASK_QUEUE;
 
     @Autowired
-    private WorkerFactory workerFactory;
+    private LLMActivityImpl llmActivity;
+
+//    @Autowired
+//    private WorkerFactory workerFactory;
 
     @Bean
     public WorkflowServiceStubs workflowServiceStubs() {
@@ -45,8 +47,8 @@ public class TemporalConfig {
         return WorkerFactory.newInstance(workflowClient);
     }
 
-    @PostConstruct
-    public void startWorkerFactory() {
+    @Bean
+    public Worker startWorkerFactory(WorkerFactory workerFactory) {
         logger.info("Starting Temporal Worker Factory and registering components...");
         Worker worker = workerFactory.newWorker(TASK_QUEUE);
 
@@ -58,11 +60,12 @@ public class TemporalConfig {
         // Assuming AskUserActivityImpl and ValidateInputActivityImpl will be Spring beans
         // or instantiated directly if not. For now, direct instantiation.
         // If these were Spring beans, they could be @Autowired into this class.
-        worker.registerActivitiesImplementations(new AskUserActivityImpl(), new ValidateInputActivityImpl());
+        worker.registerActivitiesImplementations(new AskUserActivityImpl(), new ValidateInputActivityImpl(), llmActivity);
         logger.info("Registered activity implementations: {}, {}", AskUserActivityImpl.class.getName(), ValidateInputActivityImpl.class.getName());
 
         // Start the worker factory. This effectively starts all configured workers.
         workerFactory.start();
         logger.info("Temporal WorkerFactory started for task queue: {}", TASK_QUEUE);
+        return worker;
     }
 }

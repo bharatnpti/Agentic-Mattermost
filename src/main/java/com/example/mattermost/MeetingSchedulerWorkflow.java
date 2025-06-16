@@ -12,5 +12,5 @@ public interface MeetingSchedulerWorkflow {
     void scheduleMeeting(Goal goal);
 
     @SignalMethod
-    void onUserResponse(String actionId, Map<String, Object> userInput);
+    void onUserResponse(String actionId, String userInput);
 }

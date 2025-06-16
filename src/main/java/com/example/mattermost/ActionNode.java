@@ -12,6 +12,8 @@ public class ActionNode {
     private Map<String, Object> actionParams;
     private ActionStatus actionStatus; // PENDING, COMPLETED, FAILED, WAITING_FOR_INPUT
 
+    private String actionResponse;
+
     // Constructors
     public ActionNode() {
         this.actionStatus = ActionStatus.PENDING;
@@ -64,6 +66,14 @@ public class ActionNode {
 
     public void setActionStatus(ActionStatus actionStatus) {
         this.actionStatus = actionStatus;
+    }
+
+    public String getActionResponse() {
+        return actionResponse;
+    }
+
+    public void setActionResponse(String actionResponse) {
+        this.actionResponse = actionResponse;
     }
 
     @Override

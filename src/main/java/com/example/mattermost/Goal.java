@@ -13,7 +13,7 @@ public class Goal {
     private List<Relationship> relationships;
 
     // Field to store action outputs, should be part of JSON for workflow state
-    private Map<String, Map<String, Object>> actionOutputs;
+    private Map<String, String> actionOutputs;
 
 
     // Constructors
@@ -53,14 +53,14 @@ public class Goal {
         this.relationships = relationships;
     }
 
-    public Map<String, Map<String, Object>> getActionOutputs() {
+    public Map<String, String> getActionOutputs() {
         if (this.actionOutputs == null) {
             this.actionOutputs = new ConcurrentHashMap<>();
         }
         return actionOutputs;
     }
 
-    public void setActionOutputs(Map<String, Map<String, Object>> actionOutputs) {
+    public void setActionOutputs(Map<String, String> actionOutputs) {
         this.actionOutputs = actionOutputs;
     }
 

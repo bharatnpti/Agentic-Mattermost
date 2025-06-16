@@ -6,7 +6,7 @@ public class UserResponsePayload {
 
     private String workflowId;
     private String actionId;
-    private Map<String, Object> userInput;
+    private String userInput;
 
     public String getWorkflowId() {
         return workflowId;
@@ -24,11 +24,11 @@ public class UserResponsePayload {
         this.actionId = actionId;
     }
 
-    public Map<String, Object> getUserInput() {
+    public String getUserInput() {
         return userInput;
     }
 
-    public void setUserInput(Map<String, Object> userInput) {
+    public void setUserInput(String userInput) {
         this.userInput = userInput;
     }
 }
