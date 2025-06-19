@@ -25,8 +25,6 @@ public class AskUserActivityImpl implements AskUserActivity {
         // and waiting for an external system to call the signal method on the workflow.
         // For this mock, we just log. The signal will be sent manually or by a test.
         System.out.println("**************************************************************************************");
-        System.out.println("SIMULATED USER PROMPT (Action ID: " + actionId + ")");
-        System.out.println("Prompt: " + prompt);
         System.out.println("To respond, signal the workflow with actionId '" + actionId + "' and your input.");
         System.out.println("e.g., using tctl: tctl workflow signal -w " + workflowId + " -n onUserResponse -i '{\"" + actionId + "\": {\"key\": \"value\"}}'");
         System.out.println("**************************************************************************************");

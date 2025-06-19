@@ -20,14 +20,14 @@ public class PROMPTHOLDER {
                     Based on the description and execution result, determine the most accurate action status from the following enum values:
                     
                     Rules:
-                    - If the action has not started and required inputs are not available yet → return `PENDING`
-                    - If the action is asking for user/system input and awaiting a response → return `WAITING_FOR_INPUT`
-                    - If input has been received and action is actively being executed → return `PROCESSING`
-                    - If the action was executed successfully with all required fields present → return `COMPLETED`
-                    - If execution failed or required input was invalid → return `FAILED`
-                    - If the action's dependencies failed or were skipped → return `SKIPPED`
+                    - If the action has not started and required inputs are not available yet → return PENDING
+                    - If the action is asking for user/system input and awaiting a response → return WAITING_FOR_INPUT
+                    - If input has been received and action is actively being executed → return PROCESSING
+                    - If the action was executed successfully with all required fields present → return COMPLETED
+                    - If execution failed or required input was invalid → return FAILED
+                    - If the action's dependencies failed or were skipped → return SKIPPED
                     
-                    Return **only** the appropriate `ActionStatus` enum value based on the above.
+                    Return **only** the appropriate ActionStatus enum value based on the above.
                     
                     
                     

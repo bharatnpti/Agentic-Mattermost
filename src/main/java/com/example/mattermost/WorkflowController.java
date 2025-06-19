@@ -29,7 +29,7 @@ public class WorkflowController {
 
     @PostMapping("/start")
     public ResponseEntity<Map<String, String>> startWorkflow(@RequestBody Goal goal) {
-        String workflowId = "MeetingSchedulerWorkflow_" + UUID.randomUUID().toString();
+        String workflowId = "MeetingSchedulerWorkflow_" + UUID.randomUUID().toString().substring(0, 6);
         logger.info("Received request to start workflow for goal: '{}', generated workflowId: {}", goal.getGoal(), workflowId);
 
         try {

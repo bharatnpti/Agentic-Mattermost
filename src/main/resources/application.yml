@@ -28,3 +28,8 @@ spring:
 #            password: secretpass
 #            username: neo4j
 #        uri: bolt://localhost:7687
+
+logging:
+  level:
+      org.springframework.ai.chat.client.advisor: DEBUG
+      com.example.mattermost: WARN

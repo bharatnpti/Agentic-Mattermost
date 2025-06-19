@@ -26,6 +26,10 @@ public class LLMActivityImpl implements LLMActivity {
 
     @Override
     public LLMProcessingResult processActionWithLLM(LLMProcessingRequest request) {
+
+        if(MeetingSchedulerWorkflowImpl.debug) {
+            System.out.println("Processing LLM Activity DEBUG");
+        }
             // This is where the NLP service call happens - in the activity, not the workflow
             String actionResult = nlpService.executeAction(
                     request.getGoal(),
@@ -38,6 +42,10 @@ public class LLMActivityImpl implements LLMActivity {
                     request.getAction(),
                     actionResult
             );
+
+        if(MeetingSchedulerWorkflowImpl.debug) {
+            System.out.println("Processing LLM Activity DEBUG");
+        }
 
             return new LLMProcessingResult(true, actionResult, actionStatus);
 

@@ -23,6 +23,8 @@ import java.util.stream.Collectors;
 
 public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
 
+    public static final boolean debug = false;
+
     private static final Logger logger = LoggerFactory.getLogger(MeetingSchedulerWorkflowImpl.class);
 
     private Goal currentGoal;
@@ -97,10 +99,12 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                 logger.info("No processable actions, but have waiting actions. Awaiting signals...");
                 // Add timeout to prevent infinite waiting
                 Workflow.await(Duration.ofMinutes(30), () -> hasNewProcessableActions() || isWorkflowComplete());
-            } else if (!actionsProcessed && !hasWaitingActions()) {
-                logger.info("No processable actions and no waiting actions. Checking for completion...");
-                break; // Exit loop to check completion
             }
+
+//            else if (!actionsProcessed && !hasWaitingActions()) {
+//                logger.info("No processable actions and no waiting actions. Checking for completion...");
+//                break; // Exit loop to check completion
+//            }
 
             // Add a small yield to prevent tight loops
             Workflow.sleep(Duration.ofMillis(100));
@@ -109,6 +113,13 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
 
     private boolean processAllProcessableActions() {
         List<ActionNode> processableActions = getProcessableActions();
+
+        boolean consolidateAvailabilities001 = processableActions.stream().anyMatch(a -> a.getActionId().equalsIgnoreCase("consolidate_availabilities_001"));
+
+        if(consolidateAvailabilities001) {
+            logger.info("Processable actions consolidate availabilities 001");
+//            debug =  true;
+        }
 
         if (processableActions.isEmpty()) {
             logger.info("No processable actions available");
@@ -184,8 +195,11 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
             completedActions.forEach(completedAction -> {
                 String actionText = completedAction.getActionDescription();
                 String result = completedAction.getActionResponse();
+                convHistory.append("**ACTION:**").append(System.lineSeparator());
                 convHistory.append(actionText).append(System.lineSeparator());
+                convHistory.append("**ACTION RESPONSE:**").append(System.lineSeparator());
                 convHistory.append(result).append(System.lineSeparator());
+                convHistory.append(System.lineSeparator());
             });
 
             logger.info("Processing action: {}, with conv history length: {}", actionId, convHistory.length());
@@ -202,9 +216,6 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                 return new ProcessingResult(actionId, false);
             }
 
-            // If neither worked, mark as failed
-            logger.warn("Action {} could not be processed - no completion method available", actionId);
-            updateActionStatus(actionId, ActionStatus.FAILED);
             return new ProcessingResult(actionId, false);
 
         } catch (Exception e) {
@@ -286,16 +297,17 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
         logger.info("Received user response for actionId: {} with input: {}", actionId, userInput);
 
         // Validate that we're expecting input for this action
-        if (!waitingForUserInputMap.containsKey(actionId) ||
-                actionStatuses.get(actionId) != ActionStatus.WAITING_FOR_INPUT) {
-            logger.warn("Unexpected user response for actionId: {} - not waiting for input. Current status: {}",
-                    actionId, actionStatuses.get(actionId));
-            return;
-        }
+//        if (!waitingForUserInputMap.containsKey(actionId) ||
+//                actionStatuses.get(actionId) != ActionStatus.WAITING_FOR_INPUT) {
+//            logger.warn("Unexpected user response for actionId: {} - not waiting for input. Current status: {}",
+//                    actionId, actionStatuses.get(actionId));
+//            return;
+//        }
 
         ActionNode action = currentGoal.getNodeById(actionId);
-        if (action == null) {
-            logger.warn("Received response for unknown actionId: {}", actionId);
+        if (action == null || action.getActionStatus() != ActionStatus.WAITING_FOR_INPUT) {
+            logger.warn("Unexpected user response for actionId: {} - not waiting for input. Current status: {}",
+                    actionId, actionStatuses.get(actionId));
             return;
         }
 
@@ -316,12 +328,17 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
             ActionEvaluationResult actionEvaluationResult = new ObjectMapper().readValue(llmActivity.evaluateAndProcessUserInput(currentGoal, action, userInput), ActionEvaluationResult.class);
 
             if(actionEvaluationResult.getStatus() == ActionEvaluationResult.Status.COMPLETED ) {
-                logger.info("User input completed successfully for actionId: {}", actionId);
+                logger.info("User input status: {} successfully for actionId: {}", actionEvaluationResult.getStatus(), actionId);
                 updateActionOutput(actionId, userInput);
-                updateActionStatus(action.getActionId(), ActionStatus.COMPLETED);
+                action.setActionResponse(userInput);
+                updateActionStatus(action.getActionId(), ActionStatus.valueOf(actionEvaluationResult.getStatus().name()));
                 waitingForUserInputMap.remove(actionId);
-            } else {
+            } if(actionEvaluationResult.getStatus() == ActionEvaluationResult.Status.WAITING_FOR_INPUT ) {
+                //ask user for more info
+            }
+            else {
                 logger.info("User input failed for actionId: {}", actionId);
+                updateActionStatus(action.getActionId(), ActionStatus.valueOf(actionEvaluationResult.getStatus().name()));
             }
 
 
@@ -354,13 +371,16 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
     }
 
     private void updateActionStatus(String actionId, ActionStatus status) {
-        System.out.println("Action status for :" + actionId + ".." + actionStatuses.entrySet());
         actionStatuses.put(actionId, status);
         ActionNode node = currentGoal.getNodeById(actionId);
         if (node != null) {
             node.setActionStatus(status);
         }
-        logger.debug("Updated action {} status to {}", actionId, status);
+        logger.info("Updated action {} status to {}", actionId, status);
+
+        if(actionId.equalsIgnoreCase("ask_arun_availability_001") && status == ActionStatus.COMPLETED) {
+            hasNewProcessableActions();
+        }
     }
 
     private void updateActionOutput(String actionId, String output) {
@@ -380,7 +400,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                     boolean notCurrentlyProcessing = !currentlyProcessing.contains(actionId);
                     boolean depsMet = dependenciesMet(actionId);
 
-                    logger.debug("Action {}: status={}, pending={}, notProcessing={}, depsMet={}",
+                    logger.info("Action {}: status={}, pending={}, notProcessing={}, depsMet={}",
                             actionId, currentStatus, isPending, notCurrentlyProcessing, depsMet);
 
                     return isPending && notCurrentlyProcessing && depsMet;
@@ -390,7 +410,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
 
     private boolean hasWaitingActions() {
         return actionStatuses.values().stream()
-                .anyMatch(status -> status == ActionStatus.WAITING_FOR_INPUT);
+                .anyMatch(status -> status == ActionStatus.WAITING_FOR_INPUT || status == ActionStatus.PENDING || status == ActionStatus.PROCESSING);
     }
 
     private boolean hasNewProcessableActions() {

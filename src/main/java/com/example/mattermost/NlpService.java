@@ -3,6 +3,7 @@ package com.example.mattermost;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.PromptTemplate;
@@ -57,10 +58,14 @@ public class NlpService {
                 .build();
 
         ChatClient openAi4OClient = ChatClient.builder(baseOpenAiChatModel.mutate().defaultOptions(OpenAiChatOptions.builder()
-                .model("gpt-4o-mini").build()).build()).build();
+                .model("gpt-4o-mini").build()).build())
+                .defaultAdvisors(new SimpleLoggerAdvisor())
+                .build();
 
         ChatClient openAi4_1Client = ChatClient.builder(baseOpenAiChatModel.mutate().defaultOptions(OpenAiChatOptions.builder()
-                .model("gpt-4.1-mini,").build()).build()).build();
+                .model("gpt-4.1-mini,").build()).build())
+                .defaultAdvisors(new SimpleLoggerAdvisor())
+                .build();
 
 
         chatClient = Map.of(
@@ -159,6 +164,9 @@ public class NlpService {
 //    }
 
     public String executeAction(String goal, String previousActionsResponseString, ActionNode action) {
+        if(MeetingSchedulerWorkflowImpl.debug) {
+            System.out.println("Processing LLM Activity DEBUG");
+        }
         PromptTemplate promptTemplate = new PromptTemplate(PROMPTHOLDER.EXECUTE_ACTION);
         Prompt prompt = promptTemplate.create(
                 Map.of("goal", goal,
@@ -170,11 +178,14 @@ public class NlpService {
         ChatClient chatClient1 = chatClient.get(openai4O);
 //        chatClient1 = chatClient1.mutate().defaultToolCallbacks(toolCallbackProvider.getToolCallbacks()).defaultTools(internalTools).build();
         ChatResponse chatResponse = chatClient1.prompt(prompt).call().chatResponse();
-        System.out.println("Executing action result: " + chatResponse);
-        return chatResponse.toString();
+//        System.out.println("Executing action result: " + chatResponse);
+        return chatResponse.getResult().getOutput().getText();
     }
 
     public ActionStatus determineActionResult(String goal, ActionNode action, String actionResult) {
+        if(MeetingSchedulerWorkflowImpl.debug) {
+            System.out.println("Processing LLM Activity DEBUG");
+        }
         PromptTemplate promptTemplate = new PromptTemplate(PROMPTHOLDER.ACTION_STATUS);
         Prompt prompt = promptTemplate.create(
                 Map.of("goal", goal,
@@ -186,7 +197,7 @@ public class NlpService {
         ChatClient chatClient1 = chatClient.get(openai4O);
 //        chatClient1 = chatClient1.mutate().defaultToolCallbacks(toolCallbackProvider.getToolCallbacks()).defaultTools(internalTools).build();
         ChatResponse chatResponse = chatClient1.prompt(prompt).call().chatResponse();
-        System.out.println("Executing action result: " + chatResponse);
+//        System.out.println("Executing action result: " + chatResponse);
         return ActionStatus.valueOf(chatResponse.getResult().getOutput().getText());
     }
 
@@ -203,10 +214,8 @@ public class NlpService {
         ChatClient chatClient1 = chatClient.get(openai4O);
 //        chatClient1 = chatClient1.mutate().defaultToolCallbacks(toolCallbackProvider.getToolCallbacks()).defaultTools(internalTools).build();
         ChatResponse chatResponse = chatClient1.prompt(prompt).call().chatResponse();
-        System.out.println("evaluateAndProcessUserInput: " + chatResponse);
         String text = chatResponse.getResult().getOutput().getText();
         String s = text.replaceAll("```json", "").replaceAll("```", "");
-        System.out.println("evaluateAndProcessUserInput s: " + s);
         return s;
     }
 }
