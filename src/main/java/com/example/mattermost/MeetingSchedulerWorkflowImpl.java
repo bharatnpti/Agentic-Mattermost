@@ -23,8 +23,6 @@ import java.util.stream.Collectors;
 
 public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
 
-    public static final boolean debug = false;
-
     private static final Logger logger = LoggerFactory.getLogger(MeetingSchedulerWorkflowImpl.class);
 
     private Goal currentGoal;
@@ -90,13 +88,13 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
 
     private void executeWorkflowLoop() {
         while (workflowActive && !isWorkflowComplete()) {
-            logger.info("Starting workflow execution cycle");
+            logger.debug("Starting workflow execution cycle");
 
             // Process all currently processable actions
             boolean actionsProcessed = processAllProcessableActions();
 
             if (!actionsProcessed && hasWaitingActions()) {
-                logger.info("No processable actions, but have waiting actions. Awaiting signals...");
+                logger.debug("No processable actions, but have waiting actions. Awaiting signals...");
                 // Add timeout to prevent infinite waiting
                 Workflow.await(Duration.ofMinutes(30), () -> hasNewProcessableActions() || isWorkflowComplete());
             }
@@ -114,20 +112,13 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
     private boolean processAllProcessableActions() {
         List<ActionNode> processableActions = getProcessableActions();
 
-        boolean consolidateAvailabilities001 = processableActions.stream().anyMatch(a -> a.getActionId().equalsIgnoreCase("consolidate_availabilities_001"));
-
-        if(consolidateAvailabilities001) {
-            logger.info("Processable actions consolidate availabilities 001");
-//            debug =  true;
-        }
-
         if (processableActions.isEmpty()) {
-            logger.info("No processable actions available");
+            logger.debug("No processable actions available");
             return false;
         }
 
-        logger.info("Found {} processable actions: {}",
-                processableActions.size(),
+        logger.info("Found {} processable actions", processableActions.size());
+        logger.debug("Processable action IDs: {}",
                 processableActions.stream().map(ActionNode::getActionId).collect(Collectors.toList()));
 
         // Process actions in parallel for better performance
@@ -136,7 +127,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
         for (ActionNode action : processableActions) {
             // Mark as currently processing to avoid duplicate processing
             if (currentlyProcessing.add(action.getActionId())) {
-                logger.info("Starting async processing for action: {}", action.getActionId());
+                logger.debug("Starting async processing for action: {}", action.getActionId());
                 actionPromises.add(Async.function(this::processActionAsync, action));
             }
         }
@@ -202,17 +193,19 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                 convHistory.append(System.lineSeparator());
             });
 
-            logger.info("Processing action: {}, with conv history length: {}", actionId, convHistory.length());
+        logger.debug("Processing action: {}, with conv history length: {}", actionId, convHistory.length());
 
             // Try LLM completion using activity (moved from direct bean access)
             if (tryLLMCompletionViaActivity(action, convHistory.toString())) {
-                logger.info("Action {} completed by LLM activity", actionId);
+            // This specific log was already debug, no change needed here from previous step
+            // logger.debug("Action {} completed by LLM activity", actionId);
                 return new ProcessingResult(actionId, true);
             }
 
             // If LLM didn't complete, try user input
             if (tryUserInputRequest(action)) {
-                logger.info("Action {} waiting for user input", actionId);
+            // This specific log was already debug, no change needed here from previous step
+            // logger.debug("Action {} waiting for user input", actionId);
                 return new ProcessingResult(actionId, false);
             }
 
@@ -237,7 +230,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
     // FIXED: Use activity instead of direct bean access
     private boolean tryLLMCompletionViaActivity(ActionNode action, String convHistory) {
         try {
-            logger.info("Attempting LLM completion via activity for action: {}", action.getActionId());
+            logger.debug("Attempting LLM completion via activity for action: {}", action.getActionId());
 
             // Delegate to LLM activity instead of direct bean access
             LLMProcessingRequest request = new LLMProcessingRequest(
@@ -274,7 +267,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
         }
 
         try {
-            logger.info("Requesting user input for action {} with prompt: '{}'", action.getActionId(), prompt);
+            logger.debug("Requesting user input for action {} with prompt: '{}'", action.getActionId(), prompt);
 
             // Set state before calling activity to avoid race conditions
             updateActionStatus(action.getActionId(), ActionStatus.WAITING_FOR_INPUT);
@@ -283,7 +276,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
             // Request user input asynchronously
             askUserActivity.ask(action.getActionId(), prompt);
 
-            logger.info("User input requested for action: {}", action.getActionId());
+            logger.debug("User input requested for action: {}", action.getActionId());
             return true;
 
         } catch (Exception e) {
@@ -294,7 +287,8 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
 
     @Override
     public void onUserResponse(String actionId, String userInput) {
-        logger.info("Received user response for actionId: {} with input: {}", actionId, userInput);
+        // This specific log was already debug, no change needed here from previous step
+        // logger.debug("Received user response for actionId: {} with input: {}", actionId, userInput);
 
         // Validate that we're expecting input for this action
 //        if (!waitingForUserInputMap.containsKey(actionId) ||
@@ -316,7 +310,8 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
     }
 
     private void processUserInput(String actionId, String userInput, ActionNode action) {
-        logger.info("Processing user input for action: {}", actionId);
+        // This specific log was already debug, no change needed here from previous step
+        // logger.debug("Processing user input for action: {}", actionId);
 
         try {
             // Update status to processing
@@ -328,7 +323,8 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
             ActionEvaluationResult actionEvaluationResult = new ObjectMapper().readValue(llmActivity.evaluateAndProcessUserInput(currentGoal, action, userInput), ActionEvaluationResult.class);
 
             if(actionEvaluationResult.getStatus() == ActionEvaluationResult.Status.COMPLETED ) {
-                logger.info("User input status: {} successfully for actionId: {}", actionEvaluationResult.getStatus(), actionId);
+                // This specific log was already debug, no change needed here from previous step
+                // logger.debug("User input status: {} successfully for actionId: {}", actionEvaluationResult.getStatus(), actionId);
                 updateActionOutput(actionId, userInput);
                 action.setActionResponse(userInput);
                 updateActionStatus(action.getActionId(), ActionStatus.valueOf(actionEvaluationResult.getStatus().name()));
@@ -337,7 +333,8 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                 //ask user for more info
             }
             else {
-                logger.info("User input failed for actionId: {}", actionId);
+                // This specific log was already warn, no change needed here from previous step
+                // logger.warn("User input failed for actionId: {}", actionId);
                 updateActionStatus(action.getActionId(), ActionStatus.valueOf(actionEvaluationResult.getStatus().name()));
             }
 
@@ -357,7 +354,8 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
             String originalPrompt = waitingForUserInputMap.get(actionId);
             String refinedPrompt = "Your previous input was not sufficient. " + originalPrompt;
 
-            logger.info("Re-prompting for action {} with refined prompt", actionId);
+            // This specific log was already debug, no change needed here from previous step
+            // logger.debug("Re-prompting for action {} with refined prompt", actionId);
 
             // Reset to waiting state and re-prompt
             updateActionStatus(actionId, ActionStatus.WAITING_FOR_INPUT);
@@ -376,17 +374,13 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
         if (node != null) {
             node.setActionStatus(status);
         }
-        logger.info("Updated action {} status to {}", actionId, status);
-
-        if(actionId.equalsIgnoreCase("ask_arun_availability_001") && status == ActionStatus.COMPLETED) {
-            hasNewProcessableActions();
-        }
+        logger.debug("Updated action {} status to {}", actionId, status);
     }
 
     private void updateActionOutput(String actionId, String output) {
         actionOutputs.put(actionId, output);
         currentGoal.getActionOutputs().put(actionId, output);
-        logger.info("Updated action {} output: {}", actionId, output);
+        logger.debug("Updated action {} output: {}", actionId, output);
     }
 
     private List<ActionNode> getProcessableActions() {
@@ -400,7 +394,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                     boolean notCurrentlyProcessing = !currentlyProcessing.contains(actionId);
                     boolean depsMet = dependenciesMet(actionId);
 
-                    logger.info("Action {}: status={}, pending={}, notProcessing={}, depsMet={}",
+                    logger.trace("Action {}: status={}, pending={}, notProcessing={}, depsMet={}",
                             actionId, currentStatus, isPending, notCurrentlyProcessing, depsMet);
 
                     return isPending && notCurrentlyProcessing && depsMet;
@@ -481,7 +475,8 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                     !dependenciesMet(actionId) &&
                     hasFailedDependencies(actionId)) {
 
-                logger.info("Marking action {} as SKIPPED due to failed dependencies", actionId);
+                // This specific log was already warn, no change needed here from previous step
+                // logger.warn("Marking action {} as SKIPPED due to failed dependencies", actionId);
                 updateActionStatus(actionId, ActionStatus.SKIPPED);
             }
         }

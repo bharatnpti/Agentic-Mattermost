@@ -62,7 +62,8 @@ public class MeetingSchedulerAppMain {
         }
 
         Goal goal = objectMapper.readValue(goalJsonString, Goal.class);
-        logger.info("Successfully parsed Goal JSON: {}", goal.getGoal());
+        logger.info("Successfully parsed Goal from {}", "example-goal.json"); // Assuming resourceName is "example-goal.json"
+        logger.debug("Goal content: {}", goal.toString()); // Or objectMapper.writeValueAsString(goal)
 
 
         // 6. Start a Workflow Instance

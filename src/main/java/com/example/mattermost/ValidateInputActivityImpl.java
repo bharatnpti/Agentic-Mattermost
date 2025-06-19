@@ -16,10 +16,15 @@ public class ValidateInputActivityImpl implements ValidateInputActivity {
         String workflowId = Activity.getExecutionContext().getInfo().getWorkflowId();
 
         logger.info(
-            "[Activity: ValidateInput, WorkflowID: {}, ActivityID: {}] Validating input for actionId: '{}'. Input: {}, Params: {}",
+            "[Activity: ValidateInput, WorkflowID: {}, ActivityID: {}] Validating input for actionId: '{}'.",
             workflowId,
             activityId,
-            actionId,
+            actionId
+        );
+        logger.debug(
+            "[Activity: ValidateInput, WorkflowID: {}, ActivityID: {}] Input: {}, Params: {}",
+            workflowId,
+            activityId,
             userInput,
             actionParams
         );
@@ -28,7 +33,7 @@ public class ValidateInputActivityImpl implements ValidateInputActivity {
         // For this PoC, we'll consider input valid if it's not null and not empty.
         // A real LLM validation would be more complex.
         if (userInput == null || userInput.isEmpty()) {
-            logger.warn("Validation FAILED for actionId '{}': User input is null or empty.", actionId);
+            logger.warn("[Activity: ValidateInput, WorkflowID: {}, ActivityID: {}] Validation FAILED for actionId '{}': User input is null or empty.", workflowId, activityId, actionId);
             return false;
         }
 
@@ -40,12 +45,12 @@ public class ValidateInputActivityImpl implements ValidateInputActivity {
                 List<String> requiredFields = (List<String>) actionParams.get("required_fields");
                 for (String field : requiredFields) {
                     if (!userInput.containsKey(field) || userInput.get(field) == null || userInput.get(field).toString().trim().isEmpty()) {
-                        logger.warn("Validation FAILED for actionId '{}': Missing required field '{}'.", actionId, field);
+                        logger.warn("[Activity: ValidateInput, WorkflowID: {}, ActivityID: {}] Validation FAILED for actionId '{}': Missing required field '{}'.", workflowId, activityId, actionId, field);
                         return false;
                     }
                 }
             } catch (ClassCastException e) {
-                logger.error("Validation FAILED for actionId '{}': Could not cast 'required_fields' to List<String>. Params: {}", actionId, actionParams, e);
+                logger.error("[Activity: ValidateInput, WorkflowID: {}, ActivityID: {}] Validation FAILED for actionId '{}': Could not cast 'required_fields' to List<String>. Params: {}", workflowId, activityId, actionId, actionParams, e);
                 return false; // Or handle more gracefully
             }
         }
@@ -57,16 +62,16 @@ public class ValidateInputActivityImpl implements ValidateInputActivity {
             boolean durationPresent = userInput.containsKey("duration") && userInput.get("duration") != null && !userInput.get("duration").toString().trim().isEmpty();
 
             if (topicPresent && dateTimePresent && durationPresent) {
-                 logger.info("Validation SUCCEEDED for actionId '{}': All required details (topic, datetime, duration) are present.", actionId);
+                 logger.info("[Activity: ValidateInput, WorkflowID: {}, ActivityID: {}] Validation SUCCEEDED for actionId '{}': All required details (topic, datetime, duration) are present.", workflowId, activityId, actionId);
                  return true;
             } else {
-                logger.warn("Validation FAILED for actionId '{}': Missing some details. Topic: {}, DateTime: {}, Duration: {}.", actionId, topicPresent, dateTimePresent, durationPresent);
+                logger.warn("[Activity: ValidateInput, WorkflowID: {}, ActivityID: {}] Validation FAILED for actionId '{}': Missing some details. Topic: {}, DateTime: {}, Duration: {}.", workflowId, activityId, actionId, topicPresent, dateTimePresent, durationPresent);
                 return false;
             }
         }
 
 
-        logger.info("Validation SUCCEEDED for actionId '{}' (default mock validation).", actionId);
+        logger.info("[Activity: ValidateInput, WorkflowID: {}, ActivityID: {}] Validation SUCCEEDED for actionId '{}' (default mock validation).", workflowId, activityId, actionId);
         return true; // Default to true if no specific checks fail
     }
 }
