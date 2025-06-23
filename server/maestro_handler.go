@@ -17,10 +17,12 @@ type MaestroHandler struct {
 	BotUserID            string
 	GetConfig            func() *configuration
 	CallGraphQLAgentFunc func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, pingInterval time.Duration, messageChan chan<- string, errorChan chan<- error)
+	plugin               *Plugin // Added field to hold the plugin instance
 }
 
-func NewMaestroHandler(api plugin.API, botUserID string, getConfig func() *configuration, callGraphQLAgentFunc func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, pingInterval time.Duration, messageChan chan<- string, errorChan chan<- error)) *MaestroHandler {
+func NewMaestroHandler(p *Plugin, api plugin.API, botUserID string, getConfig func() *configuration, callGraphQLAgentFunc func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, pingInterval time.Duration, messageChan chan<- string, errorChan chan<- error)) *MaestroHandler {
 	return &MaestroHandler{
+		plugin:               p, // Store the plugin instance
 		API:                  api,
 		BotUserID:            botUserID,
 		GetConfig:            getConfig,
@@ -68,7 +70,8 @@ func (h *MaestroHandler) MessageHasBeenPosted(c *plugin.Context, post *model.Pos
 		return
 	}
 
-	if err := h.processMaestroTask(agentName, numMessages, post.ChannelId, post.UserId, post.Id); err != nil {
+	// Pass `text` (the parsed task message) to processMaestroTask
+	if err := h.processMaestroTask(agentName, numMessages, text, post.ChannelId, post.UserId, post.Id); err != nil {
 		// Add a simpler debug log to ensure it prints, using standard fmt.Println
 		fmt.Printf("STANDARD_DEBUG: MessageHasBeenPosted: processMaestroTask returned non-nil error. Error: %#v\n", err)
 		// These LogDebug calls might not be showing up, keeping them for now.
@@ -116,8 +119,25 @@ func (h *MaestroHandler) parseMaestroArgsNewFormat(argsString string) (agentName
 	return agentName, numMessages, taskText, nil
 }
 
-func (h *MaestroHandler) processMaestroTask(agentName string, numMessages int, channelID string, userID string, rootID string) error {
-	h.API.LogInfo("Processing Maestro task", "agentName", agentName)
+func (h *MaestroHandler) processMaestroTask(agentName string, numMessages int, taskText string, channelID string, userID string, rootID string) error {
+	h.API.LogInfo("Processing Maestro task", "agentName", agentName, "taskText", taskText)
+
+	// Call the workflow message API
+	if h.plugin != nil {
+		workflowResponse, workflowErr := h.plugin.CallWorkflowMessageAPI(channelID, taskText, userID)
+		if workflowErr != nil {
+			h.API.LogError("Failed to call workflow message API", "error", workflowErr.Error(), "channelID", channelID, "userID", userID)
+			// Decide if this error should prevent further processing or just be logged.
+			// For now, logging and continuing with GraphQL agent.
+		} else {
+			h.API.LogInfo("Successfully called workflow message API", "status", workflowResponse.Status, "channelID", channelID, "userID", userID)
+			if workflowResponse.Error != "" {
+				h.API.LogWarn("Workflow message API returned an error in response", "error_message", workflowResponse.Error)
+			}
+		}
+	} else {
+		h.API.LogError("Plugin instance is nil in MaestroHandler, cannot call WorkflowMessageAPI")
+	}
 
 	originalPost, appErr := h.API.GetPost(rootID)
 	if appErr != nil {

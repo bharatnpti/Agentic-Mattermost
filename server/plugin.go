@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -89,7 +92,7 @@ func (p *Plugin) OnActivate() error {
 	p.commandClient = command.NewCommandHandler(dependencies)
 
 	// Initialize MaestroHandler
-	p.maestroHandler = NewMaestroHandler(p.API, p.botUserID, p.getConfiguration, CallGraphQLAgentFunc)
+	p.maestroHandler = NewMaestroHandler(p, p.API, p.botUserID, p.getConfiguration, CallGraphQLAgentFunc)
 
 	job, err := cluster.Schedule(
 		p.API,
@@ -166,4 +169,59 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 		return
 	}
 	p.router.ServeHTTP(w, r)
+}
+
+// CallWorkflowMessageAPI sends a message to the workflow API.
+func (p *Plugin) CallWorkflowMessageAPI(channelID, message, userID string) (*WorkflowMessageResponse, error) {
+	// Get the API endpoint from the configuration.
+	// Assuming the endpoint is stored in the plugin configuration, similar to MaestroURL.
+	// If not, this needs to be adjusted or hardcoded (though hardcoding is not ideal).
+	// For now, let's assume a configuration field `WorkflowMessageAPIURL`.
+	// If it's always localhost:8080, we can hardcode it.
+	// Given the problem description, it's localhost:8080.
+	apiURL := "http://localhost:8080/api/v1/workflow/message"
+
+	requestBody := WorkflowMessageRequest{
+		ChannelId: channelID,
+		Message:   message,
+		UserId:    userID,
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		p.API.LogError("Failed to marshal request body for workflow message API", "error", err)
+		return nil, errors.Wrap(err, "failed to marshal request body")
+	}
+
+	req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		p.API.LogError("Failed to create request for workflow message API", "error", err)
+		return nil, errors.Wrap(err, "failed to create request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Use a default HTTP client. For production, consider configuring timeouts.
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		p.API.LogError("Failed to send request to workflow message API", "error", err, "url", apiURL)
+		return nil, errors.Wrap(err, "failed to send request")
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		p.API.LogError("Workflow message API returned non-OK status", "status_code", resp.StatusCode, "url", apiURL)
+		// Optionally, read the body here to get more error details from the API.
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		p.API.LogDebug("Workflow message API error response body", "body", string(bodyBytes))
+		return nil, errors.Errorf("workflow message API request failed with status code %d", resp.StatusCode)
+	}
+
+	var response WorkflowMessageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		p.API.LogError("Failed to decode response from workflow message API", "error", err)
+		return nil, errors.Wrap(err, "failed to decode response")
+	}
+
+	return &response, nil
 }
