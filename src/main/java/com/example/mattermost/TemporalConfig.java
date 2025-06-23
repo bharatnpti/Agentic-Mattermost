@@ -23,6 +23,9 @@ public class TemporalConfig {
     @Autowired
     private LLMActivityImpl llmActivity;
 
+    @Autowired
+    private ActiveTaskActivity activeTaskActivity;
+
 //    @Autowired
 //    private WorkerFactory workerFactory;
 
@@ -60,7 +63,7 @@ public class TemporalConfig {
         // Assuming AskUserActivityImpl and ValidateInputActivityImpl will be Spring beans
         // or instantiated directly if not. For now, direct instantiation.
         // If these were Spring beans, they could be @Autowired into this class.
-        worker.registerActivitiesImplementations(new AskUserActivityImpl(), new ValidateInputActivityImpl(), llmActivity);
+        worker.registerActivitiesImplementations(new AskUserActivityImpl(), new ValidateInputActivityImpl(), llmActivity, activeTaskActivity);
         logger.info("Registered activity implementations: {}, {}", AskUserActivityImpl.class.getName(), ValidateInputActivityImpl.class.getName());
 
         // Start the worker factory. This effectively starts all configured workers.

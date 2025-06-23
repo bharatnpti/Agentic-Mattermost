@@ -9,8 +9,8 @@ import java.util.Map;
 public interface MeetingSchedulerWorkflow {
 
     @WorkflowMethod
-    void scheduleMeeting(Goal goal);
+    void scheduleMeeting(Goal goal, String channelId, String userId, String threadId);
 
     @SignalMethod
-    void onUserResponse(String actionId, String userInput);
+    void onUserResponse(String actionId, String userInput, String threadId, String channelId);
 }

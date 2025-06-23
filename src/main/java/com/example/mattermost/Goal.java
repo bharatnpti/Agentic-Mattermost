@@ -8,6 +8,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class Goal {
+
+    private String workflowId;
     private String goal;
     private List<ActionNode> nodes;
     private List<Relationship> relationships;
@@ -73,6 +75,14 @@ public class Goal {
                     .filter(node -> Objects.equals(node.getActionId(), actionId))
                     .findFirst()
                     .orElse(null);
+    }
+
+    public String getWorkflowId() {
+        return workflowId;
+    }
+
+    public void setWorkflowId(String workflowId) {
+        this.workflowId = workflowId;
     }
 
     @Override

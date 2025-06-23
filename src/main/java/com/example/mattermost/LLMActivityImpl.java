@@ -1,7 +1,5 @@
 package com.example.mattermost;
 
-import io.temporal.activity.ActivityInterface;
-import io.temporal.activity.ActivityMethod;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,7 +23,7 @@ public class LLMActivityImpl implements LLMActivity {
     }
 
     @Override
-    public LLMProcessingResult processActionWithLLM(LLMProcessingRequest request) {
+    public LLMProcessingResult processActionWithLLM(LLMProcessingRequest request, String currentThreadId, String currentUserId, String currentChannelId) {
 
         if(MeetingSchedulerWorkflowImpl.debug) {
             System.out.println("Processing LLM Activity DEBUG");
@@ -34,7 +32,10 @@ public class LLMActivityImpl implements LLMActivity {
             String actionResult = nlpService.executeAction(
                     request.getGoal(),
                     request.getConvHistory(),
-                    request.getAction()
+                    request.getAction(),
+                    currentThreadId,
+                    currentUserId,
+                    currentChannelId
             );
 
             ActionStatus actionStatus = nlpService.determineActionResult(
@@ -54,5 +55,33 @@ public class LLMActivityImpl implements LLMActivity {
     @Override
     public String evaluateAndProcessUserInput(Goal currentGoal, ActionNode action, String userInput) {
         return nlpService.evaluateAndProcessUserInput(currentGoal, action, userInput);
+    }
+
+    @Override
+    public ActionStatus determineActionType(Goal currentGoal, ActionNode action, String convHistory) {
+
+        ActionStatus actionStatus = nlpService.determineActionType(
+                currentGoal.getGoal(),
+                action,
+                convHistory
+        );
+        logger.info("Determined action type: {}", actionStatus);
+        return actionStatus;
+    }
+
+
+    @Override
+    public String ask_user(Goal currentGoal, ActionNode action, String convHistory, String currentThreadId, String channelId, String currentUserId) {
+
+        String askUser = nlpService.ask_user(
+                currentGoal.getGoal(),
+                action,
+                convHistory,
+                currentThreadId,
+                channelId,
+                currentUserId
+        );
+        logger.info("Asked user: {}", askUser);
+        return askUser;
     }
 }

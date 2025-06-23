@@ -17,7 +17,11 @@ public interface LLMActivity {
      * and into an activity where it belongs
      */
     @ActivityMethod
-    LLMProcessingResult processActionWithLLM(LLMProcessingRequest request);
+    LLMProcessingResult processActionWithLLM(LLMProcessingRequest request, String currentThreadId, String currentUserId, String currentChannelId);
 
     String evaluateAndProcessUserInput(Goal currentGoal, ActionNode action, String userInput);
+
+    ActionStatus determineActionType(Goal currentGoal, ActionNode action, String string);
+
+    String ask_user(Goal currentGoal, ActionNode action, String convHistory, String currentThreadId, String channelId, String currentUserId);
 }

@@ -1,18 +1,25 @@
 package com.example.mattermost;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class ActionNode {
     private String actionId;
+
+    private String workflowId;
     private String actionName;
     private String actionDescription;
     private Map<String, Object> actionParams;
     private ActionStatus actionStatus; // PENDING, COMPLETED, FAILED, WAITING_FOR_INPUT
 
     private String actionResponse;
+
+    private List<String> actionResponses = new ArrayList<>();
 
     // Constructors
     public ActionNode() {
@@ -74,6 +81,27 @@ public class ActionNode {
 
     public void setActionResponse(String actionResponse) {
         this.actionResponse = actionResponse;
+        addActionResponse(actionResponse);
+    }
+
+    public String getWorkflowId() {
+        return workflowId;
+    }
+
+    public void setWorkflowId(String workflowId) {
+        this.workflowId = workflowId;
+    }
+
+    public List<String> getActionResponses() {
+        return actionResponses;
+    }
+
+    public void setActionResponses(List<String> actionResponses) {
+        this.actionResponses = actionResponses;
+    }
+
+    public void addActionResponse(String actionResponse) {
+        this.actionResponses.add(actionResponse);
     }
 
     @Override
@@ -92,9 +120,13 @@ public class ActionNode {
     @Override
     public String toString() {
         return "ActionNode{" +
-               "actionId='" + actionId + '\'' +
-               ", actionName='" + actionName + '\'' +
-               ", actionStatus=" + actionStatus +
-               '}';
+                "actionId='" + actionId + '\'' +
+                ", workflowId='" + workflowId + '\'' +
+                ", actionName='" + actionName + '\'' +
+                ", actionDescription='" + actionDescription + '\'' +
+                ", actionParams=" + actionParams +
+                ", actionStatus=" + actionStatus +
+                ", actionResponse='" + actionResponse + '\'' +
+                '}';
     }
 }

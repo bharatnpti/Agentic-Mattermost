@@ -10,22 +10,27 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.HashSet;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
 
     private static final Logger logger = LoggerFactory.getLogger(MeetingSchedulerWorkflowImpl.class);
+    public static boolean debug = false;
 
     private Goal currentGoal;
+
+    private String currentChannelId;
+
+    private String currentUserId;
+
+    private String currentThreadId;
+
     private final Map<String, ActionStatus> actionStatuses = new ConcurrentHashMap<>();
     private final Map<String, String> actionOutputs = new ConcurrentHashMap<>();
     private final Map<String, String> waitingForUserInputMap = new ConcurrentHashMap<>();
@@ -38,12 +43,13 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
     private final AskUserActivity askUserActivity;
     private final ValidateInputActivity validateInputActivity;
     private final LLMActivity llmActivity;
+    private final ActiveTaskActivity activeTaskActivity;
 
     public MeetingSchedulerWorkflowImpl() {
         // Define retry options for activities
         RetryOptions retryOptions = RetryOptions.newBuilder()
-                .setInitialInterval(Duration.ofSeconds(100))
-                .setMaximumInterval(Duration.ofSeconds(100))
+                .setInitialInterval(Duration.ofSeconds(1)) // Reduced from 100 seconds
+                .setMaximumInterval(Duration.ofSeconds(30)) // Reduced from 100 seconds
                 .setBackoffCoefficient(2)
                 .setMaximumAttempts(3)
                 .build();
@@ -53,15 +59,25 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                 .setRetryOptions(retryOptions)
                 .build();
 
+        // Separate options for activeTaskActivity with shorter timeout
+        ActivityOptions activeTaskOptions = ActivityOptions.newBuilder()
+                .setStartToCloseTimeout(Duration.ofSeconds(30))
+                .setRetryOptions(retryOptions)
+                .build();
+
         this.askUserActivity = Workflow.newActivityStub(AskUserActivity.class, defaultActivityOptions);
         this.validateInputActivity = Workflow.newActivityStub(ValidateInputActivity.class, defaultActivityOptions);
         this.llmActivity = Workflow.newActivityStub(LLMActivity.class, defaultActivityOptions);
+        this.activeTaskActivity = Workflow.newActivityStub(ActiveTaskActivity.class, activeTaskOptions);
     }
 
     @Override
-    public void scheduleMeeting(Goal goal) {
+    public void scheduleMeeting(Goal goal, String channelId, String userId,  String threadId) {
         logger.info("Workflow started for goal: {}. Initializing action statuses.", goal.getGoal());
         this.currentGoal = goal;
+        this.currentChannelId = channelId;
+        this.currentUserId = userId;
+        this.currentThreadId = threadId;
 
         // Initialize action statuses and outputs
         initializeWorkflowState();
@@ -88,21 +104,16 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
 
     private void executeWorkflowLoop() {
         while (workflowActive && !isWorkflowComplete()) {
-            logger.debug("Starting workflow execution cycle");
+            logger.info("Starting workflow execution cycle");
 
             // Process all currently processable actions
             boolean actionsProcessed = processAllProcessableActions();
 
             if (!actionsProcessed && hasWaitingActions()) {
-                logger.debug("No processable actions, but have waiting actions. Awaiting signals...");
+                logger.info("No processable actions, but have waiting actions. Awaiting signals...");
                 // Add timeout to prevent infinite waiting
                 Workflow.await(Duration.ofMinutes(30), () -> hasNewProcessableActions() || isWorkflowComplete());
             }
-
-//            else if (!actionsProcessed && !hasWaitingActions()) {
-//                logger.info("No processable actions and no waiting actions. Checking for completion...");
-//                break; // Exit loop to check completion
-//            }
 
             // Add a small yield to prevent tight loops
             Workflow.sleep(Duration.ofMillis(100));
@@ -113,73 +124,38 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
         List<ActionNode> processableActions = getProcessableActions();
 
         if (processableActions.isEmpty()) {
-            logger.debug("No processable actions available");
+            logger.info("No processable actions available");
             return false;
         }
 
         logger.info("Found {} processable actions", processableActions.size());
-        logger.debug("Processable action IDs: {}",
+        logger.info("Processable action IDs: {}",
                 processableActions.stream().map(ActionNode::getActionId).collect(Collectors.toList()));
 
-        // Process actions in parallel for better performance
-        List<Promise<ProcessingResult>> actionPromises = new ArrayList<>();
-
+        // Process actions sequentially to avoid deadlock issues
+        boolean anyCompleted = false;
         for (ActionNode action : processableActions) {
-            // Mark as currently processing to avoid duplicate processing
             if (currentlyProcessing.add(action.getActionId())) {
-                logger.debug("Starting async processing for action: {}", action.getActionId());
-                actionPromises.add(Async.function(this::processActionAsync, action));
-            }
-        }
-
-        // Wait for all actions to complete their processing
-        if (!actionPromises.isEmpty()) {
-            // Add timeout to prevent indefinite blocking
-            try {
-                Promise.allOf(actionPromises).get(10, TimeUnit.MINUTES);
-            } catch (Exception e) {
-                logger.error("Timeout or error waiting for action processing: {}", e.getMessage());
-                // Clean up processing tracking for failed actions
-                actionPromises.forEach(promise -> {
-                    try {
-                        ProcessingResult result = promise.get();
-                        currentlyProcessing.remove(result.actionId);
-                    } catch (Exception ex) {
-                        // Handle individual promise failures
-                        logger.error("Error getting result from promise: {}", ex.getMessage());
-                    }
-                });
-                return false;
-            }
-
-            // Check results
-            boolean anyCompleted = false;
-            for (Promise<ProcessingResult> promise : actionPromises) {
+                logger.info("Processing action: {}", action.getActionId());
                 try {
-                    ProcessingResult result = promise.get();
-                    currentlyProcessing.remove(result.actionId);
+                    ProcessingResult result = processActionSync(action);
                     if (result.completed) {
                         anyCompleted = true;
                     }
-                } catch (Exception e) {
-                    logger.error("Error processing action result: {}", e.getMessage());
+                } finally {
+                    currentlyProcessing.remove(action.getActionId());
                 }
             }
-
-            return anyCompleted;
         }
 
-        return false;
+        return anyCompleted;
     }
 
-    private ProcessingResult processActionAsync(ActionNode action) {
+    private ProcessingResult processActionSync(ActionNode action) {
         String actionId = action.getActionId();
 
         try {
-            // Update status to processing
-            updateActionStatus(actionId, ActionStatus.PROCESSING);
-
-            // Build conversation history
+            updateActionStatusLocal(actionId, ActionStatus.PROCESSING);
             List<ActionNode> completedActions = getAllCompletedActions();
             StringBuilder convHistory = new StringBuilder();
 
@@ -193,31 +169,63 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                 convHistory.append(System.lineSeparator());
             });
 
-        logger.debug("Processing action: {}, with conv history length: {}", actionId, convHistory.length());
+            logger.info("Processing action: {}, with conv history length: {}", actionId, convHistory.length());
 
-            // Try LLM completion using activity (moved from direct bean access)
-            if (tryLLMCompletionViaActivity(action, convHistory.toString())) {
-            // This specific log was already debug, no change needed here from previous step
-            // logger.debug("Action {} completed by LLM activity", actionId);
-                return new ProcessingResult(actionId, true);
-            }
+            // --- CHANGE STARTS HERE ---
+            // Asynchronously determine action type
+            Promise<ActionStatus> determineTypePromise = Async.function(llmActivity::determineActionType, currentGoal, action, convHistory.toString());
 
-            // If LLM didn't complete, try user input
-            if (tryUserInputRequest(action)) {
-            // This specific log was already debug, no change needed here from previous step
-            // logger.debug("Action {} waiting for user input", actionId);
-                return new ProcessingResult(actionId, false);
-            }
+            // Wait for the promise to complete and get the result
+            ActionStatus actionStatus = determineTypePromise.get(); // This will yield the workflow thread
+
+            processBasedOnActionStatus(actionId, action, actionStatus, convHistory.toString());
+
+//            if(actionStatus == ActionStatus.WAITING_FOR_INPUT) {
+//                // Asynchronously ask user
+//                Async.procedure(llmActivity::ask_user, currentGoal, action, convHistory.toString(), currentThreadId, currentChannelId, currentUserId); // Assuming generatePrompt is deterministic
+//                updateActionStatusLocal(actionId, ActionStatus.WAITING_FOR_INPUT);
+//                waitingForUserInputMap.put(action.getActionId(), generatePrompt(action)); // Assuming generatePrompt is deterministic
+////                Async.procedure(this::updateActiveTaskAsync, action.getActionId(), ActionStatus.WAITING_FOR_INPUT);
+//            } else if(actionStatus != ActionStatus.COMPLETED) {
+//                // Asynchronously try LLM completion
+//                Promise<LLMProcessingResult> llmCompletionPromise = Async.function(this::tryLLMCompletionViaActivity, action, convHistory.toString());
+//                llmCompletionPromise.get(); // This will yield the workflow thread
+//            }
+            // --- CHANGE ENDS HERE ---
 
             return new ProcessingResult(actionId, false);
 
         } catch (Exception e) {
             logger.error("Error processing action {}: {}", actionId, e.getMessage(), e);
-            updateActionStatus(actionId, ActionStatus.FAILED);
+            updateActionStatusLocal(actionId, ActionStatus.FAILED);
             return new ProcessingResult(actionId, false);
-        }  finally {
-            // Always remove from currently processing set
-            currentlyProcessing.remove(actionId);
+        }
+    }
+
+    private LLMProcessingResult tryLLMCompletionViaActivity(ActionNode action, String convHistory) {
+        try {
+            logger.info("Attempting LLM completion via activity for action: {}", action.getActionId());
+
+            LLMProcessingRequest request = new LLMProcessingRequest(
+                    currentGoal.getGoal(),
+                    convHistory,
+                    action
+            );
+
+            // This call within tryLLMCompletionViaActivity is still synchronous relative to this method.
+            // The previous change ensures that processActionSync itself doesn't block waiting for this.
+            LLMProcessingResult result = llmActivity.processActionWithLLM(request, currentThreadId, currentUserId, currentChannelId);
+
+            if (result != null && result.isSuccess()) {
+                updateActionOutput(action.getActionId(), result.getActionResult());
+                updateActionStatusLocal(action.getActionId(), result.getActionStatus());
+                Async.procedure(this::updateActiveTaskAsync, action.getActionId(), result.getActionStatus());
+            }
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error in LLM completion for action {}: {}", action.getActionId(), e.getMessage(), e);
+            throw e;
         }
     }
 
@@ -225,34 +233,6 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
         return currentGoal.getNodes().stream()
                 .filter(node -> node.getActionStatus() == ActionStatus.COMPLETED)
                 .collect(Collectors.toList());
-    }
-
-    // FIXED: Use activity instead of direct bean access
-    private boolean tryLLMCompletionViaActivity(ActionNode action, String convHistory) {
-        try {
-            logger.debug("Attempting LLM completion via activity for action: {}", action.getActionId());
-
-            // Delegate to LLM activity instead of direct bean access
-            LLMProcessingRequest request = new LLMProcessingRequest(
-                    currentGoal.getGoal(),
-                    convHistory,
-                    action
-            );
-
-            LLMProcessingResult result = llmActivity.processActionWithLLM(request);
-
-            if (result != null && result.isSuccess()) {
-                updateActionOutput(action.getActionId(), result.getActionResult());
-                updateActionStatus(action.getActionId(), result.getActionStatus());
-                return result.getActionStatus() == ActionStatus.COMPLETED;
-            }
-
-            return false;
-
-        } catch (Exception e) {
-            logger.error("Error in LLM completion for action {}: {}", action.getActionId(), e.getMessage(), e);
-            return false;
-        }
     }
 
     private boolean tryUserInputRequest(ActionNode action) {
@@ -267,16 +247,19 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
         }
 
         try {
-            logger.debug("Requesting user input for action {} with prompt: '{}'", action.getActionId(), prompt);
+            logger.info("Requesting user input for action {} with prompt: '{}'", action.getActionId(), prompt);
 
             // Set state before calling activity to avoid race conditions
-            updateActionStatus(action.getActionId(), ActionStatus.WAITING_FOR_INPUT);
+            updateActionStatusLocal(action.getActionId(), ActionStatus.WAITING_FOR_INPUT);
             waitingForUserInputMap.put(action.getActionId(), prompt);
 
             // Request user input asynchronously
             askUserActivity.ask(action.getActionId(), prompt);
 
-            logger.debug("User input requested for action: {}", action.getActionId());
+            // Async update to external system
+            Async.procedure(this::updateActiveTaskAsync, action.getActionId(), ActionStatus.WAITING_FOR_INPUT);
+
+            logger.info("User input requested for action: {}", action.getActionId());
             return true;
 
         } catch (Exception e) {
@@ -286,66 +269,92 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
     }
 
     @Override
-    public void onUserResponse(String actionId, String userInput) {
-        // This specific log was already debug, no change needed here from previous step
-        // logger.debug("Received user response for actionId: {} with input: {}", actionId, userInput);
+    public void onUserResponse(String actionId, String userInput, String threadId, String channelId) {
+        logger.info("Received user response for actionId: {} with input: {}", actionId, userInput);
 
-        // Validate that we're expecting input for this action
-//        if (!waitingForUserInputMap.containsKey(actionId) ||
-//                actionStatuses.get(actionId) != ActionStatus.WAITING_FOR_INPUT) {
+        ActionNode action = currentGoal.getNodeById(actionId);
+//        if (action == null || action.getActionStatus() != ActionStatus.WAITING_FOR_INPUT) {
 //            logger.warn("Unexpected user response for actionId: {} - not waiting for input. Current status: {}",
 //                    actionId, actionStatuses.get(actionId));
 //            return;
 //        }
 
-        ActionNode action = currentGoal.getNodeById(actionId);
-        if (action == null || action.getActionStatus() != ActionStatus.WAITING_FOR_INPUT) {
-            logger.warn("Unexpected user response for actionId: {} - not waiting for input. Current status: {}",
-                    actionId, actionStatuses.get(actionId));
-            return;
-        }
-
-        // Process the user input asynchronously to avoid blocking the signal handler
-        processUserInput(actionId, userInput, action);
+        // Process the user input
+        processUserInput(actionId, userInput, action, threadId, channelId);
     }
 
-    private void processUserInput(String actionId, String userInput, ActionNode action) {
-        // This specific log was already debug, no change needed here from previous step
-        // logger.debug("Processing user input for action: {}", actionId);
+    private void processUserInput(String actionId, String userInput, ActionNode action, String threadId, String channelId) {
+        logger.info("Processing user input for action: {}", actionId);
 
         try {
             // Update status to processing
-            updateActionStatus(actionId, ActionStatus.PROCESSING);
+            updateActionStatusLocal(actionId, ActionStatus.PROCESSING);
+            action.setActionResponse(userInput);
 
-            // Process with LLM using the user input as context
-//            tryLLMCompletionViaActivity(action, userInput);
+            String convHistory = String.join(", ", action.getActionResponses());
+            Promise<ActionStatus> determineTypePromise = Async.function(llmActivity::determineActionType, currentGoal, action, convHistory);
 
-            ActionEvaluationResult actionEvaluationResult = new ObjectMapper().readValue(llmActivity.evaluateAndProcessUserInput(currentGoal, action, userInput), ActionEvaluationResult.class);
+            // Wait for the promise to complete and get the result
+            ActionStatus actionStatus = determineTypePromise.get(); // This will yield the workflow thread
 
-            if(actionEvaluationResult.getStatus() == ActionEvaluationResult.Status.COMPLETED ) {
-                // This specific log was already debug, no change needed here from previous step
-                // logger.debug("User input status: {} successfully for actionId: {}", actionEvaluationResult.getStatus(), actionId);
-                updateActionOutput(actionId, userInput);
-                action.setActionResponse(userInput);
-                updateActionStatus(action.getActionId(), ActionStatus.valueOf(actionEvaluationResult.getStatus().name()));
-                waitingForUserInputMap.remove(actionId);
-            } if(actionEvaluationResult.getStatus() == ActionEvaluationResult.Status.WAITING_FOR_INPUT ) {
-                //ask user for more info
-            }
-            else {
-                // This specific log was already warn, no change needed here from previous step
-                // logger.warn("User input failed for actionId: {}", actionId);
-                updateActionStatus(action.getActionId(), ActionStatus.valueOf(actionEvaluationResult.getStatus().name()));
-            }
+            processBasedOnActionStatus(actionId, action, actionStatus, convHistory);
 
+//            ActionEvaluationResult actionEvaluationResult = new ObjectMapper().readValue(
+//                    llmActivity.evaluateAndProcessUserInput(currentGoal, action, userInput),
+//                    ActionEvaluationResult.class);
 
+//            if (actionEvaluationResult.getStatus() == ActionEvaluationResult.Status.COMPLETED) {
+//                logger.info("User input status: {} successfully for actionId: {}",
+//                        actionEvaluationResult.getStatus(), actionId);
+//                updateActionOutput(actionId, userInput);
+//                updateActionStatusLocal(actionId, ActionStatus.valueOf(actionEvaluationResult.getStatus().name()));
+//                waitingForUserInputMap.remove(actionId);
+//
+//                // Async update to external system
+//                Async.procedure(this::updateActiveTaskAsync, actionId, ActionStatus.COMPLETED);
+//
+//            } else if (actionEvaluationResult.getStatus() == ActionEvaluationResult.Status.WAITING_FOR_INPUT) {
+//                // Ask user for more info - handled by re-prompting logic
+//                handleInvalidInput(actionId, action);
+//            } else {
+//                logger.warn("User input failed for actionId: {}", actionId);
+//                updateActionStatusLocal(actionId, ActionStatus.valueOf(actionEvaluationResult.getStatus().name()));
+//
+//                // Async update to external system
+//                Async.procedure(this::updateActiveTaskAsync, actionId, ActionStatus.valueOf(actionEvaluationResult.getStatus().name()));
+//            }
 
         } catch (Exception e) {
             logger.error("Error processing user input for action {}: {}", actionId, e.getMessage(), e);
-            updateActionStatus(actionId, ActionStatus.FAILED);
+            updateActionStatusLocal(actionId, ActionStatus.FAILED);
             waitingForUserInputMap.remove(actionId);
-        } finally {
-            currentlyProcessing.remove(actionId);
+
+            // Async update to external system
+//            Async.procedure(this::updateActiveTaskAsync, actionId, ActionStatus.FAILED);
+        }
+    }
+
+    private void processBasedOnActionStatus(String actionId, ActionNode action, ActionStatus actionStatus, String convHistory) {
+        if(actionStatus == ActionStatus.WAITING_FOR_INPUT) {
+            // Asynchronously ask user
+            Async.procedure(llmActivity::ask_user, currentGoal, action, convHistory, currentThreadId, currentChannelId, currentUserId); // Assuming generatePrompt is deterministic
+            updateActionStatusLocal(actionId, ActionStatus.WAITING_FOR_INPUT);
+//            waitingForUserInputMap.put(action.getActionId(), generatePrompt(action)); // Assuming generatePrompt is deterministic
+//            Async.procedure(this::updateActiveTaskAsync, actionId, ActionStatus.WAITING_FOR_INPUT);
+
+//                Async.procedure(this::updateActiveTaskAsync, action.getActionId(), ActionStatus.WAITING_FOR_INPUT);
+        } else if(actionStatus == ActionStatus.AUTOMATED) {
+            // Asynchronously try LLM completion
+            Promise<LLMProcessingResult> llmCompletionPromise = Async.function(this::tryLLMCompletionViaActivity, action, convHistory);
+            LLMProcessingResult llmProcessingResult = llmCompletionPromise.get();// This will yield the workflow thread
+            StringBuffer updatedConvHistory = new StringBuffer(convHistory);
+            updatedConvHistory.append(System.lineSeparator()).append(llmProcessingResult.getActionResult());
+            processBasedOnActionStatus(actionId, action, llmProcessingResult.getActionStatus(), updatedConvHistory.toString());
+        } else if(actionStatus == ActionStatus.COMPLETED) {
+            updateActionStatusLocal(actionId, ActionStatus.COMPLETED);
+//            Async.procedure(this::updateActiveTaskAsync, actionId, ActionStatus.COMPLETED);
+        } else {
+            logger.warn("Unexpected action status for actionId: {}", actionId);
         }
     }
 
@@ -354,33 +363,45 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
             String originalPrompt = waitingForUserInputMap.get(actionId);
             String refinedPrompt = "Your previous input was not sufficient. " + originalPrompt;
 
-            // This specific log was already debug, no change needed here from previous step
-            // logger.debug("Re-prompting for action {} with refined prompt", actionId);
+            logger.info("Re-prompting for action {} with refined prompt", actionId);
 
             // Reset to waiting state and re-prompt
-            updateActionStatus(actionId, ActionStatus.WAITING_FOR_INPUT);
+            updateActionStatusLocal(actionId, ActionStatus.WAITING_FOR_INPUT);
             askUserActivity.ask(actionId, refinedPrompt);
+
+            // Async update to external system
+            Async.procedure(this::updateActiveTaskAsync, actionId, ActionStatus.WAITING_FOR_INPUT);
 
         } catch (Exception e) {
             logger.error("Error re-prompting for action {}: {}", actionId, e.getMessage(), e);
-            updateActionStatus(actionId, ActionStatus.FAILED);
+            updateActionStatusLocal(actionId, ActionStatus.FAILED);
             waitingForUserInputMap.remove(actionId);
         }
     }
 
-    private void updateActionStatus(String actionId, ActionStatus status) {
+    // Local status update (non-blocking)
+    private void updateActionStatusLocal(String actionId, ActionStatus status) {
         actionStatuses.put(actionId, status);
         ActionNode node = currentGoal.getNodeById(actionId);
         if (node != null) {
             node.setActionStatus(status);
         }
-        logger.debug("Updated action {} status to {}", actionId, status);
+        logger.info("Updated action {} status to {}", actionId, status);
+    }
+
+    // Async procedure for external updates
+    private void updateActiveTaskAsync(String actionId, ActionStatus status) {
+        try {
+            activeTaskActivity.updateActiveTask(actionId, status, currentGoal.getWorkflowId(), currentChannelId, currentUserId);
+        } catch (Exception e) {
+            logger.error("Error updating active task for action {}: {}", actionId, e.getMessage(), e);
+        }
     }
 
     private void updateActionOutput(String actionId, String output) {
         actionOutputs.put(actionId, output);
         currentGoal.getActionOutputs().put(actionId, output);
-        logger.debug("Updated action {} output: {}", actionId, output);
+        logger.info("Updated action {} output: {}", actionId, output);
     }
 
     private List<ActionNode> getProcessableActions() {
@@ -398,13 +419,18 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                             actionId, currentStatus, isPending, notCurrentlyProcessing, depsMet);
 
                     return isPending && notCurrentlyProcessing && depsMet;
+                }).map(action -> {
+                    action.setWorkflowId(currentGoal.getWorkflowId());
+                    return action;
                 })
                 .collect(Collectors.toList());
     }
 
     private boolean hasWaitingActions() {
         return actionStatuses.values().stream()
-                .anyMatch(status -> status == ActionStatus.WAITING_FOR_INPUT || status == ActionStatus.PENDING || status == ActionStatus.PROCESSING);
+                .anyMatch(status -> status == ActionStatus.WAITING_FOR_INPUT ||
+                        status == ActionStatus.PENDING ||
+                        status == ActionStatus.PROCESSING);
     }
 
     private boolean hasNewProcessableActions() {
@@ -475,9 +501,11 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
                     !dependenciesMet(actionId) &&
                     hasFailedDependencies(actionId)) {
 
-                // This specific log was already warn, no change needed here from previous step
-                // logger.warn("Marking action {} as SKIPPED due to failed dependencies", actionId);
-                updateActionStatus(actionId, ActionStatus.SKIPPED);
+                logger.warn("Marking action {} as SKIPPED due to failed dependencies", actionId);
+                updateActionStatusLocal(actionId, ActionStatus.SKIPPED);
+
+                // Async update to external system
+                Async.procedure(this::updateActiveTaskAsync, actionId, ActionStatus.SKIPPED);
             }
         }
     }
@@ -530,6 +558,3 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
         }
     }
 }
-
-// Additional classes needed for the LLM activity approach
-
