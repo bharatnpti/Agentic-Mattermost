@@ -122,23 +122,6 @@ func (h *MaestroHandler) parseMaestroArgsNewFormat(argsString string) (agentName
 func (h *MaestroHandler) processMaestroTask(agentName string, numMessages int, taskText string, channelID string, userID string, rootID string) error {
 	h.API.LogInfo("Processing Maestro task", "agentName", agentName, "taskText", taskText)
 
-	// Call the workflow message API
-	if h.plugin != nil {
-		workflowResponse, workflowErr := h.plugin.CallWorkflowMessageAPI(channelID, taskText, userID)
-		if workflowErr != nil {
-			h.API.LogError("Failed to call workflow message API", "error", workflowErr.Error(), "channelID", channelID, "userID", userID)
-			// Decide if this error should prevent further processing or just be logged.
-			// For now, logging and continuing with GraphQL agent.
-		} else {
-			h.API.LogInfo("Successfully called workflow message API", "status", workflowResponse.Status, "channelID", channelID, "userID", userID)
-			if workflowResponse.Error != "" {
-				h.API.LogWarn("Workflow message API returned an error in response", "error_message", workflowResponse.Error)
-			}
-		}
-	} else {
-		h.API.LogError("Plugin instance is nil in MaestroHandler, cannot call WorkflowMessageAPI")
-	}
-
 	originalPost, appErr := h.API.GetPost(rootID)
 	if appErr != nil {
 		h.API.LogError("Failed to get original post", "post_id", rootID, "error", appErr.Error())
@@ -152,6 +135,103 @@ func (h *MaestroHandler) processMaestroTask(agentName string, numMessages int, t
 	}
 
 	h.API.LogInfo("Threading info", "originalPostId", rootID, "threadRootID", threadRootID)
+
+	config := h.GetConfig()
+	endpoints := config.CustomEndpoints
+
+	var found *CustomEndpoint
+
+	for i, e := range endpoints {
+		fmt.Printf("Iterating Agents: %d: %s -> %s (Type: %s)\n", i, e.Name, e.Endpoint, e.Type)
+	}
+
+	for i, e := range endpoints {
+		if e.Name == agentName {
+			found = &endpoints[i]
+			break
+		}
+	}
+
+	if found != nil {
+		fmt.Printf("Found: %s -> %s (Type: %s)\n", found.Name, found.Endpoint, found.Type)
+	} else {
+		fmt.Println("Not found, using default Maestro")
+		found = &CustomEndpoint{"Maestro", config.MaestroURL, EndpointTypeArc}
+	}
+
+	// Check endpoint type and handle accordingly
+	if found.Type == EndpointTypeWorkflow {
+		h.API.LogInfo("Using workflow endpoint", "agentName", found.Name, "endpoint", found.Endpoint)
+
+		// Call the workflow message API
+		if h.plugin != nil {
+			workflowResponse, workflowErr := h.plugin.CallWorkflowMessageAPI(channelID, taskText, userID)
+			if workflowErr != nil {
+				h.API.LogError("Failed to call workflow message API", "error", workflowErr.Error(), "channelID", channelID, "userID", userID)
+
+				// Post error message to channel
+				errorPost := &model.Post{
+					ChannelId: channelID,
+					Message:   "An error occurred while processing your workflow request. Please try again later.",
+					RootId:    threadRootID,
+					UserId:    h.BotUserID,
+				}
+				_, createErr := h.API.CreatePost(errorPost)
+				if createErr != nil {
+					h.API.LogError("Failed to create error post", "error", createErr.Error())
+				}
+				return fmt.Errorf("failed to call workflow message API: %w", workflowErr)
+			} else {
+				h.API.LogInfo("Successfully called workflow message API", "status", workflowResponse.Status, "channelID", channelID, "userID", userID)
+
+				if workflowResponse.Error != "" {
+					h.API.LogWarn("Workflow message API returned an error in response", "error_message", workflowResponse.Error)
+
+					// Post workflow error to channel
+					errorPost := &model.Post{
+						ChannelId: channelID,
+						Message:   "Workflow processing completed with error: " + workflowResponse.Error,
+						RootId:    threadRootID,
+						UserId:    h.BotUserID,
+					}
+					_, createErr := h.API.CreatePost(errorPost)
+					if createErr != nil {
+						h.API.LogError("Failed to create workflow error post", "error", createErr.Error())
+					}
+				} else {
+					// Post success message
+					successPost := &model.Post{
+						ChannelId: channelID,
+						Message:   "Workflow task has been successfully submitted and is being processed.",
+						RootId:    threadRootID,
+						UserId:    h.BotUserID,
+					}
+					_, createErr := h.API.CreatePost(successPost)
+					if createErr != nil {
+						h.API.LogError("Failed to create success post", "error", createErr.Error())
+					}
+				}
+			}
+		} else {
+			h.API.LogError("Plugin instance is nil in MaestroHandler, cannot call WorkflowMessageAPI")
+			errorPost := &model.Post{
+				ChannelId: channelID,
+				Message:   "Internal error: Plugin instance not available. Please contact an administrator.",
+				RootId:    threadRootID,
+				UserId:    h.BotUserID,
+			}
+			_, createErr := h.API.CreatePost(errorPost)
+			if createErr != nil {
+				h.API.LogError("Failed to create error post", "error", createErr.Error())
+			}
+			return fmt.Errorf("plugin instance is nil")
+		}
+
+		return nil // Return early for workflow endpoints
+	}
+
+	// Handle Arc endpoints (existing logic)
+	h.API.LogInfo("Using Arc endpoint", "agentName", found.Name, "endpoint", found.Endpoint)
 
 	postList, appErr := h.API.GetPostsForChannel(channelID, 0, numMessages+10)
 	if appErr != nil {
@@ -182,29 +262,6 @@ func (h *MaestroHandler) processMaestroTask(agentName string, numMessages int, t
 	graphQLConversationID := "1"
 	graphQLTenantID := "de"
 	graphQLSystemChannelID := "ONEAPPWEB"
-
-	config := h.GetConfig()
-	endpoints := config.CustomEndpoints
-
-	var found *CustomEndpoint
-
-	for i, e := range endpoints {
-		fmt.Printf("Iterating Agents: %d: %s -> %s\n", i, e.Name, e.Endpoint)
-	}
-
-	for i, e := range endpoints {
-		if e.Name == agentName {
-			found = &endpoints[i]
-			break
-		}
-	}
-
-	if found != nil {
-		fmt.Printf("Found: %s -> %s\n", found.Name, found.Endpoint)
-	} else {
-		fmt.Println("Not found")
-		found = &CustomEndpoint{"Maestro", config.MaestroURL}
-	}
 
 	webSocketURL := found.Endpoint
 	// Assuming GraphQLPingIntervalSeconds is guaranteed to be non-nil due to defaulting in configuration.go

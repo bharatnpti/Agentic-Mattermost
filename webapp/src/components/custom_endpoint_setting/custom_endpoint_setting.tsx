@@ -81,7 +81,6 @@ const CustomEndpointSetting: React.FC<CustomEndpointSettingProps> = ({
         if (disabled) {
             return;
         }
-        // Add new endpoint with a default Type
         const newEndpoints = [...endpoints, {Name: '', Endpoint: '', Type: EndpointTypeArc}];
         setEndpoints(newEndpoints);
         onChange(id, newEndpoints);

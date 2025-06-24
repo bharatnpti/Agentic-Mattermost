@@ -6,10 +6,10 @@ import (
 
 	// "github.com/mattermost/mattermost/server/public/model" // Not directly used
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
+	"github.com/pkg/errors" // Using this for New, Cause, Wrap
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock" // For mock.AnythingOfType
 	"github.com/stretchr/testify/require"
-	"github.com/pkg/errors" // Using this for New, Cause, Wrap
 )
 
 func TestConfigurationClone(t *testing.T) {
@@ -142,6 +142,7 @@ func TestOnConfigurationChange(t *testing.T) {
 
 		// Expect LogInfo to be called because GraphQLPingIntervalSeconds is missing
 		api.On("LogInfo", "GraphQLPingIntervalSeconds not configured or invalid, defaulting to 30 seconds.").Return().Once()
+		api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything).Return().Times(2)
 
 		err := p.OnConfigurationChange()
 		assert.NoError(t, err)
@@ -189,7 +190,6 @@ func TestOnConfigurationChange(t *testing.T) {
 		require.NotNil(t, retrievedCfg.GraphQLPingIntervalSeconds)
 		assert.Equal(t, 15, *retrievedCfg.GraphQLPingIntervalSeconds)
 
-
 		api.AssertExpectations(t)
 	})
 
@@ -199,7 +199,7 @@ func TestOnConfigurationChange(t *testing.T) {
 
 		// Keep the old configuration to check it doesn't change on load failure
 		oldCfg := &configuration{
-			MaestroURL: "ws://oldURL",
+			MaestroURL:      "ws://oldURL",
 			CustomEndpoints: []CustomEndpoint{{Name: "old", Endpoint: "http://old.co"}},
 		}
 		p.setConfiguration(oldCfg)
