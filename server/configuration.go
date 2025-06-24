@@ -17,9 +17,16 @@ import (
 //
 // If you add non-reference types to your configuration struct, be sure to rewrite Clone as a deep
 // copy appropriate for your types.
+
+const (
+	EndpointTypeArc      = "arc"
+	EndpointTypeWorkflow = "workflow"
+)
+
 type CustomEndpoint struct {
 	Name     string
 	Endpoint string
+	Type     string // Added Type field: "arc" or "workflow"
 }
 
 type configuration struct {
@@ -30,8 +37,15 @@ type configuration struct {
 
 // Clone shallow copies the configuration. Your implementation may require a deep copy if
 // your configuration has reference types.
+// Note: CustomEndpoints is a slice of structs. If CustomEndpoint contained pointers or slices,
+// a deep copy for it would be needed. Since Name, Endpoint, and Type are strings, a shallow copy is fine.
 func (c *configuration) Clone() *configuration {
 	var clone = *c
+	// Deep copy CustomEndpoints to ensure modifications to one don't affect the other.
+	if c.CustomEndpoints != nil {
+		clone.CustomEndpoints = make([]CustomEndpoint, len(c.CustomEndpoints))
+		copy(clone.CustomEndpoints, c.CustomEndpoints)
+	}
 	return &clone
 }
 
@@ -43,9 +57,14 @@ func (p *Plugin) getConfiguration() *configuration {
 	defer p.configurationLock.RUnlock()
 
 	if p.configuration == nil {
+		// Ensure a default configuration with potentially default endpoint types
+		// For now, returning an empty config, OnConfigurationChange will handle defaults.
 		return &configuration{}
 	}
-
+	// It's important that the returned configuration is treated as immutable.
+	// A clone is returned to prevent modification of the original.
+	// However, the existing getConfiguration already returns p.configuration which is a pointer.
+	// The convention is that the caller does not modify it.
 	return p.configuration
 }
 
@@ -92,7 +111,23 @@ func (p *Plugin) OnConfigurationChange() error {
 		p.API.LogInfo("GraphQLPingIntervalSeconds not configured or invalid, defaulting to 30 seconds.")
 	}
 
-	p.setConfiguration(configuration)
+	// Set default type for CustomEndpoints if not specified
+	if configuration.CustomEndpoints != nil {
+		for i := range configuration.CustomEndpoints {
+			if configuration.CustomEndpoints[i].Type == "" {
+				configuration.CustomEndpoints[i].Type = EndpointTypeArc // Default to "arc"
+				p.API.LogInfo("CustomEndpoint type not set, defaulting to 'arc'", "endpoint_name", configuration.CustomEndpoints[i].Name)
+			}
+			// Optional: Validate the type if it is set
+			// if configuration.CustomEndpoints[i].Type != EndpointTypeArc && configuration.CustomEndpoints[i].Type != EndpointTypeWorkflow {
+			//  p.API.LogWarn("Invalid CustomEndpoint type", "endpoint_name", configuration.CustomEndpoints[i].Name, "type", configuration.CustomEndpoints[i].Type)
+			//  // Optionally, force a default type or return an error
+			//  // configuration.CustomEndpoints[i].Type = EndpointTypeArc
+			// }
+		}
+	}
+
+	p.setConfiguration(configuration.Clone()) // Ensure to store a clone
 
 	return nil
 }

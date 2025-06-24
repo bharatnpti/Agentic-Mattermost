@@ -3,9 +3,15 @@
 
 import React, {useState, useEffect} from 'react';
 
-interface CustomEndpoint {
+export type EndpointType = 'arc' | 'workflow';
+
+export const EndpointTypeArc: EndpointType = 'arc';
+export const EndpointTypeWorkflow: EndpointType = 'workflow';
+
+export interface CustomEndpoint {
     Name: string;
     Endpoint: string;
+    Type: EndpointType; // Added Type field
 }
 
 interface CustomEndpointSettingProps {
@@ -33,13 +39,26 @@ const CustomEndpointSetting: React.FC<CustomEndpointSettingProps> = ({
     useEffect(() => {
         try {
             if (Array.isArray(value)) {
-                const validEndpoints = value.filter((ep) =>
-                    ep && typeof ep === 'object' && 'Name' in ep && 'Endpoint' in ep,
-                );
-                setEndpoints(validEndpoints);
+                const processedEndpoints = value.map((ep) => {
+                    if (ep && typeof ep === 'object' && 'Name' in ep && 'Endpoint' in ep) {
+                        return {
+                            Name: ep.Name,
+                            Endpoint: ep.Endpoint,
+                            Type: ep.Type || EndpointTypeArc, // Default to Arc if Type is missing
+                        };
+                    }
+                    return null; // Invalid endpoint structure
+                }).filter((ep): ep is CustomEndpoint => ep !== null); // Type guard to filter out nulls
 
-                if (validEndpoints.length === value.length) {
-                    onError?.('Some endpoints were invalid and have been filtered out.');
+                setEndpoints(processedEndpoints);
+
+                const originalValidCount = value.filter(ep => ep && typeof ep === 'object' && 'Name' in ep && 'Endpoint' in ep).length;
+                const typesDefaultedCount = value.filter(ep => ep && typeof ep === 'object' && 'Name' in ep && 'Endpoint' in ep && !ep.Type).length;
+
+                if (processedEndpoints.length !== originalValidCount) {
+                    onError?.('Some endpoint entries were malformed and have been filtered out.');
+                } else if (typesDefaultedCount > 0) {
+                    onError?.(`Some endpoints had their type defaulted to '${EndpointTypeArc}'.`); // Using a less alarming message if only types were defaulted
                 } else {
                     onError?.(null);
                 }
@@ -61,7 +80,8 @@ const CustomEndpointSetting: React.FC<CustomEndpointSettingProps> = ({
         if (disabled) {
             return;
         }
-        const newEndpoints = [...endpoints, {Name: '', Endpoint: ''}];
+        // Add new endpoint with a default Type
+        const newEndpoints = [...endpoints, {Name: '', Endpoint: '', Type: EndpointTypeArc}];
         setEndpoints(newEndpoints);
         onChange(id, newEndpoints);
     };
@@ -75,13 +95,16 @@ const CustomEndpointSetting: React.FC<CustomEndpointSettingProps> = ({
         onChange(id, newEndpoints);
     };
 
-    const handleChangeEndpoint = (index: number, field: keyof CustomEndpoint, fieldValue: string) => {
+    const handleChangeEndpoint = (index: number, field: keyof CustomEndpoint, fieldValue: string | EndpointType) => {
         if (disabled) {
             return;
         }
-        const newEndpoints = endpoints.map((ep, i) =>
-            (i === index ? ({...ep, [field]: fieldValue}) : ep),
-        );
+        const newEndpoints = endpoints.map((ep, i) => {
+            if (i === index) {
+                return {...ep, [field]: fieldValue};
+            }
+            return ep;
+        });
         setEndpoints(newEndpoints);
         onChange(id, newEndpoints);
     };
@@ -224,6 +247,15 @@ const CustomEndpointSetting: React.FC<CustomEndpointSettingProps> = ({
                                 style={styles.input}
                                 disabled={disabled}
                             />
+                            <select
+                                value={endpoint.Type || EndpointTypeArc} // Default to Arc if type is somehow undefined
+                                onChange={(e) => handleChangeEndpoint(index, 'Type', e.target.value as EndpointType)}
+                                style={styles.input} // Assuming styles.input is appropriate for select
+                                disabled={disabled}
+                            >
+                                <option value={EndpointTypeArc}>Arc</option>
+                                <option value={EndpointTypeWorkflow}>Workflow</option>
+                            </select>
                         </div>
                         <button
                             type='button'
