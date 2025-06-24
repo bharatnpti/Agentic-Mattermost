@@ -52,13 +52,14 @@ const CustomEndpointSetting: React.FC<CustomEndpointSettingProps> = ({
 
                 setEndpoints(processedEndpoints);
 
-                const originalValidCount = value.filter(ep => ep && typeof ep === 'object' && 'Name' in ep && 'Endpoint' in ep).length;
-                const typesDefaultedCount = value.filter(ep => ep && typeof ep === 'object' && 'Name' in ep && 'Endpoint' in ep && !ep.Type).length;
+                const originalValidCount = value.filter((ep) => ep && typeof ep === 'object' && 'Name' in ep && 'Endpoint' in ep).length;
+                const typesDefaultedCount = value.filter((ep) => ep && typeof ep === 'object' && 'Name' in ep && 'Endpoint' in ep && !ep.Type).length;
 
                 if (processedEndpoints.length !== originalValidCount) {
                     onError?.('Some endpoint entries were malformed and have been filtered out.');
                 } else if (typesDefaultedCount > 0) {
-                    onError?.(`Some endpoints had their type defaulted to '${EndpointTypeArc}'.`); // Using a less alarming message if only types were defaulted
+                    // Using a less alarming message if only types were defaulted
+                    onError?.(`Some endpoints had their type defaulted to '${EndpointTypeArc}'.`);
                 } else {
                     onError?.(null);
                 }
@@ -253,8 +254,8 @@ const CustomEndpointSetting: React.FC<CustomEndpointSettingProps> = ({
                                 style={styles.input} // Assuming styles.input is appropriate for select
                                 disabled={disabled}
                             >
-                                <option value={EndpointTypeArc}>Arc</option>
-                                <option value={EndpointTypeWorkflow}>Workflow</option>
+                                <option value={EndpointTypeArc}>{'Arc'}</option>
+                                <option value={EndpointTypeWorkflow}>{'Workflow'}</option>
                             </select>
                         </div>
                         <button
