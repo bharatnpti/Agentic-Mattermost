@@ -1,6 +1,9 @@
 package com.example.mattermost.domain.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -9,13 +12,21 @@ import java.util.Objects;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class ActionNode {
+    @NotBlank(message = "Action ID cannot be blank")
     private String actionId;
 
-    private String workflowId;
+    @NotBlank(message = "Action name cannot be blank")
     private String actionName;
+
+    @NotBlank(message = "Action description cannot be blank")
     private String actionDescription;
+
     private Map<String, Object> actionParams;
-    private ActionStatus actionStatus; // PENDING, COMPLETED, FAILED, WAITING_FOR_INPUT
+
+    @NotNull(message = "Action status cannot be null")
+    private ActionStatus actionStatus = ActionStatus.PENDING;
+
+    private String workflowId;
 
     private String actionResponse;
 
@@ -81,7 +92,9 @@ public class ActionNode {
 
     public void setActionResponse(String actionResponse) {
         this.actionResponse = actionResponse;
-        addActionResponse(actionResponse);
+        if (actionResponse != null && !actionResponse.isEmpty()) {
+            this.actionResponses.add(actionResponse);
+        }
     }
 
     public String getWorkflowId() {
@@ -97,11 +110,7 @@ public class ActionNode {
     }
 
     public void setActionResponses(List<String> actionResponses) {
-        this.actionResponses = actionResponses;
-    }
-
-    public void addActionResponse(String actionResponse) {
-        this.actionResponses.add(actionResponse);
+        this.actionResponses = actionResponses != null ? actionResponses : new ArrayList<>();
     }
 
     @Override
@@ -121,12 +130,10 @@ public class ActionNode {
     public String toString() {
         return "ActionNode{" +
                 "actionId='" + actionId + '\'' +
-                ", workflowId='" + workflowId + '\'' +
                 ", actionName='" + actionName + '\'' +
                 ", actionDescription='" + actionDescription + '\'' +
-                ", actionParams=" + actionParams +
                 ", actionStatus=" + actionStatus +
-                ", actionResponse='" + actionResponse + '\'' +
+                ", workflowId='" + workflowId + '\'' +
                 '}';
     }
 }

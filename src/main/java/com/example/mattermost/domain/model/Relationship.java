@@ -46,9 +46,9 @@ public class Relationship {
     @Override
     public String toString() {
         return "Relationship{" +
-               "sourceActionId='" + sourceActionId + '\'' +
-               ", targetActionId='" + targetActionId + '\'' +
-               ", type='" + type + '\'' +
-               '}';
+                "sourceActionId='" + sourceActionId + '\'' +
+                ", targetActionId='" + targetActionId + '\'' +
+                ", type='" + type + '\'' +
+                '}';
     }
 }

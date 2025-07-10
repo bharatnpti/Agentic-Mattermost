@@ -1,9 +1,17 @@
 package com.example.mattermost.domain.model;
 
+import jakarta.validation.constraints.NotBlank;
+
 public class MessagePayload {
+    @NotBlank(message = "Channel ID is required")
     private String channelId;
+
+    @NotBlank(message = "Message content is required")
     private String message;
+
+    @NotBlank(message = "User ID is required")
     private String userId;
+
     private String threadId;
 
     // Constructors
@@ -17,28 +25,28 @@ public class MessagePayload {
     }
 
     // Getters and setters
-    public String getChannelId() { 
-        return channelId; 
-    }
-    
-    public void setChannelId(String channelId) { 
-        this.channelId = channelId; 
+    public String getChannelId() {
+        return channelId;
     }
 
-    public String getMessage() { 
-        return message; 
-    }
-    
-    public void setMessage(String message) { 
-        this.message = message; 
+    public void setChannelId(String channelId) {
+        this.channelId = channelId;
     }
 
-    public String getUserId() { 
-        return userId; 
+    public String getMessage() {
+        return message;
     }
-    
-    public void setUserId(String userId) { 
-        this.userId = userId; 
+
+    public void setMessage(String message) {
+        this.message = message;
+    }
+
+    public String getUserId() {
+        return userId;
+    }
+
+    public void setUserId(String userId) {
+        this.userId = userId;
     }
 
     public String getThreadId() {

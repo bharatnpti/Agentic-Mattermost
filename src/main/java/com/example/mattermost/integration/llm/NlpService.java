@@ -1,9 +1,10 @@
 package com.example.mattermost.integration.llm;
 
-import com.example.mattermost.domain.model.ActionNode;
-import com.example.mattermost.domain.model.ActionStatus;
-import com.example.mattermost.domain.model.Goal;
+import com.example.mattermost.domain.MessageList;
+import com.example.mattermost.domain.MessageRequest;
+import com.example.mattermost.domain.model.*;
 import com.example.mattermost.integration.mattermost.MattermostService;
+import com.example.mattermost.service.MeetingInviteTool;
 import com.example.mattermost.util.PromptHolder;
 import com.example.mattermost.workflow.MeetingSchedulerWorkflowImpl;
 import org.slf4j.Logger;
@@ -17,7 +18,9 @@ import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
+import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -50,21 +53,26 @@ public class NlpService {
     private final BeanOutputConverter<IntentExtractionPojo> intentExtractionParser;
     private static final String openai4_1 = "openai-4.1-mini";
 
-//    @Autowired
-//    private SyncMcpToolCallbackProvider toolCallbackProvider;
-
     @Autowired
     private MattermostService mattermostService;
 
+    @Autowired
+    private MeetingInviteTool meetingInviteTool;
+
     public NlpService() {
+
+        String openAiKey = System.getenv("OPEN_API_KEY");
+
+        logger.error("api key is : " + openAiKey);
         OpenAiChatModel baseOpenAiChatModel = OpenAiChatModel.builder()
                 .openAiApi(OpenAiApi.builder()
                         .baseUrl("https://api.openai.com")
+                        .apiKey(openAiKey)
                         .build())
                 .build();
 
         ChatClient openAi4_1Client = ChatClient.builder(baseOpenAiChatModel.mutate().defaultOptions(OpenAiChatOptions.builder()
-                .model("o4-mini-2025-04-16").build()).build())
+                        .model("o4-mini-2025-04-16").build()).build())
 //                .defaultAdvisors(new SimpleLoggerAdvisor())
                 .build();
 
@@ -113,8 +121,8 @@ public class NlpService {
 
         PromptTemplate promptTemplate = new PromptTemplate(fullPromptString);
         Prompt prompt = promptTemplate.create(Map.of(
-            "history", formattedHistory,
-            "currentUserPrompt", userPromptText
+                "history", formattedHistory,
+                "currentUserPrompt", userPromptText
         ));
 
         logger.debug("Constructed prompt for LLM (generateText with history): {}", prompt.getContents());
@@ -164,9 +172,6 @@ public class NlpService {
 //    }
 
     public String executeAction(String goal, String previousActionsResponseString, ActionNode action, String currentThreadId, String currentUserId, String currentChannelId) {
-        if(MeetingSchedulerWorkflowImpl.debug) {
-            System.out.println("Processing LLM Activity DEBUG");
-        }
 
         PromptTemplate promptTemplate = new PromptTemplate(PromptHolder.EXECUTE_ACTION);
         Prompt prompt = promptTemplate.create(
@@ -186,7 +191,7 @@ public class NlpService {
 
         ChatClient chatClient1 = chatClient.get(openai4_1);
         chatClient1 = chatClient1.mutate()
-//                .defaultToolCallbacks(toolCallbackProvider.getToolCallbacks())
+                .defaultToolCallbacks(ToolCallbacks.from(meetingInviteTool))
                 .defaultAdvisors(new SimpleLoggerAdvisor())
 //                .defaultTools(mattermostService)
                 .defaultToolContext(toolContext)
@@ -275,7 +280,7 @@ public class NlpService {
                         "ActionId", action.getActionId(),
                         "ActionName", action.getActionName(),
                         "ActionDescription", action.getActionDescription(),
-                "convHistory", convHistory
+                        "convHistory", convHistory
                 )
         );
 
@@ -291,17 +296,19 @@ public class NlpService {
         }
     }
 
-    public String ask_user(String goal, ActionNode action, String convHistory, String currentThreadId, String channelId, String currentUserId) {
+    public MessageList formulate_user_message(String goal, ActionNode action, String convHistory, String currentThreadId, String channelId, String currentUserId) {
 
         PromptTemplate promptTemplate = new PromptTemplate(PromptHolder.ASK_USER);
         String promptTemplate1 = action.getActionParams().get("prompt_template") == null ? "" : action.getActionParams().get("prompt_template").toString();
         Object requiredFields = action.getActionParams().get("required_fields")  == null ? "" : action.getActionParams().get("required_fields").toString();
+        BeanOutputConverter<MessageList> messageRequestConverter = new BeanOutputConverter<>(MessageList.class);
         Prompt prompt = promptTemplate.create(Map.of("goal", goal,
                         "actionName", action.getActionName(),
                         "actionDescription", action.getActionDescription(),
-                "prompt_template", promptTemplate1,
-                "required_fields", requiredFields,
-                "convHistory", convHistory
+                        "prompt_template", promptTemplate1,
+                        "required_fields", requiredFields,
+                        "convHistory", convHistory,
+                        "formatInstructions", messageRequestConverter.getFormat()
                 )
         );
 
@@ -317,11 +324,11 @@ public class NlpService {
             ChatClient chatClient1 = chatClient.get(openai4_1);
             ChatResponse response = chatClient1.prompt(prompt)
 //                    .toolCallbacks(toolCallbackProvider.getToolCallbacks())
-                    .tools(mattermostService)
+//                    .tools(mattermostService)
                     .toolContext(toolContext)
                     .call().chatResponse();
             logger.info("ask_user Result: {}", response.getResult().getOutput().getText());
-            return response.getResult().getOutput().getText();
+            return messageRequestConverter.convert(response.getResult().getOutput().getText());
         } catch (Exception e) {
             logger.error("Error calling LLM for action creation: {}", e.getMessage(), e);
             throw new RuntimeException("Error: Could not create actions due to: " + e.getMessage(), e);
@@ -329,4 +336,48 @@ public class NlpService {
     }
 
 
+    public String checkAndAskUser(MessageRequest messageRequest, ActionNode action, String convHistory, String currentThreadId, String currentChannelId, String currentUserId) {
+        PromptTemplate promptTemplate = new PromptTemplate(PromptHolder.CHECK_AND_ASK_USER);
+        Prompt prompt = promptTemplate.create(Map.of("messageRequest", messageRequest.getMessage(),
+                "actionName", action.getActionName(),
+                "actionDescription", action.getActionDescription()
+        ));
+        ChatClient chatClient1 = chatClient.get(openai4_1);
+        ChatResponse response = chatClient1.prompt(prompt).call().chatResponse();
+        return response.getResult().getOutput().getText();
+    }
+
+    public void askUser(MessageRequest messageRequest, ActionNode action, String currentThreadId, String currentChannelId, String currentUserId) {
+        PromptTemplate promptTemplate = new PromptTemplate(PromptHolder.MESSAGE_USER);
+        BeanOutputConverter<MessageList> messageRequestConverter = new BeanOutputConverter<>(MessageList.class);
+        Prompt prompt = promptTemplate.create(Map.of(
+                "message", messageRequest.getMessage(),
+                        "user", messageRequest.getRecipient(),
+                "threadId", currentThreadId,
+                "requestor", currentUserId,
+                "channelId", currentChannelId
+                )
+        );
+
+        Map<String, Object> toolContext = Map.of(
+                "workflowId", action.getWorkflowId(),
+                "actionId", action.getActionId(),
+                "rootId", currentThreadId,
+                "channelId", currentChannelId,
+                "currentUserId", currentUserId
+        );
+
+        try {
+            ChatClient chatClient1 = chatClient.get(openai4_1);
+            ChatResponse response = chatClient1.prompt(prompt)
+//                    .toolCallbacks(toolCallbackProvider.getToolCallbacks())
+                    .tools(mattermostService)
+                    .toolContext(toolContext)
+                    .call().chatResponse();
+            logger.info("ask_user Result: {}", response.getResult().getOutput().getText());
+        } catch (Exception e) {
+            logger.error("Error calling LLM for action creation: {}", e.getMessage(), e);
+            throw new RuntimeException("Error: Could not create actions due to: " + e.getMessage(), e);
+        }
+    }
 }

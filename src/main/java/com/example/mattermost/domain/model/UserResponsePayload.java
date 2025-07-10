@@ -1,15 +1,22 @@
 package com.example.mattermost.domain.model;
 
 import java.util.Map;
+import jakarta.validation.constraints.NotBlank;
 
 public class UserResponsePayload {
 
-    public String channelId;
+    private String channelId;
+
+    @NotBlank(message = "Workflow ID is required")
     private String workflowId;
+
+    @NotBlank(message = "Action ID is required")
     private String actionId;
+
+    @NotBlank(message = "User input is required")
     private String userInput;
 
-    public String threadId;
+    private String threadId;
 
     public String getWorkflowId() {
         return workflowId;

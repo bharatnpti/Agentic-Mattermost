@@ -1,8 +1,12 @@
 package com.example.mattermost.workflow.activity;
 
+import com.example.mattermost.domain.CurrentContext;
+import com.example.mattermost.domain.MessageList;
+import com.example.mattermost.domain.MessageRequest;
 import com.example.mattermost.domain.model.*;
 import io.temporal.activity.ActivityInterface;
 import io.temporal.activity.ActivityMethod;
+import io.temporal.workflow.Functions;
 
 import java.util.Map;
 
@@ -24,5 +28,7 @@ public interface LLMActivity {
 
     ActionStatus determineActionType(Goal currentGoal, ActionNode action, String string);
 
-    String ask_user(Goal currentGoal, ActionNode action, String convHistory, String currentThreadId, String channelId, String currentUserId);
+    MessageList formulate_user_message(Goal currentGoal, ActionNode action, String convHistory, String currentThreadId, String channelId, String currentUserId);
+
+    String checkAndAskUser(MessageRequest messageRequest, String convHistory, CurrentContext currentContext);
 }

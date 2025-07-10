@@ -1,11 +1,12 @@
 package com.example.mattermost.workflow;
 
+import com.example.mattermost.domain.CurrentContext;
+import com.example.mattermost.domain.MessageList;
 import com.example.mattermost.domain.model.*;
 import com.example.mattermost.workflow.activity.ActiveTaskActivity;
 import com.example.mattermost.workflow.activity.AskUserActivity;
 import com.example.mattermost.workflow.activity.LLMActivity;
 import com.example.mattermost.workflow.activity.ValidateInputActivity;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.temporal.activity.ActivityOptions;
 import io.temporal.common.RetryOptions;
 import io.temporal.workflow.Async;
@@ -143,6 +144,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
             if (currentlyProcessing.add(action.getActionId())) {
                 logger.info("Processing action: {}", action.getActionId());
                 try {
+                    action.setWorkflowId(currentGoal.getWorkflowId());
                     ProcessingResult result = processActionSync(action);
                     if (result.completed) {
                         anyCompleted = true;
@@ -296,7 +298,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
             updateActionStatusLocal(actionId, ActionStatus.PROCESSING);
             action.setActionResponse(userInput);
 
-            String convHistory = String.join(", ", action.getActionResponses());
+            String convHistory = String.join(System.lineSeparator(), action.getActionResponses());
             Promise<ActionStatus> determineTypePromise = Async.function(llmActivity::determineActionType, currentGoal, action, convHistory);
 
             // Wait for the promise to complete and get the result
@@ -342,7 +344,11 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
     private void processBasedOnActionStatus(String actionId, ActionNode action, ActionStatus actionStatus, String convHistory) {
         if(actionStatus == ActionStatus.WAITING_FOR_INPUT) {
             // Asynchronously ask user
-            Async.procedure(llmActivity::ask_user, currentGoal, action, convHistory, currentThreadId, currentChannelId, currentUserId); // Assuming generatePrompt is deterministic
+            Promise<MessageList> messageListPromise = Async.function(llmActivity::formulate_user_message, currentGoal, action, convHistory, currentThreadId, currentChannelId, currentUserId);// Assuming generatePrompt is deterministic
+            MessageList messageList = messageListPromise.get();
+            messageList.getMessages().forEach(messageRequest -> {
+                Async.procedure(llmActivity::checkAndAskUser, messageRequest, convHistory, new CurrentContext(currentGoal, action, currentThreadId, currentChannelId, currentUserId));
+            });
             updateActionStatusLocal(actionId, ActionStatus.WAITING_FOR_INPUT);
 //            waitingForUserInputMap.put(action.getActionId(), generatePrompt(action)); // Assuming generatePrompt is deterministic
 //            Async.procedure(this::updateActiveTaskAsync, actionId, ActionStatus.WAITING_FOR_INPUT);
@@ -392,15 +398,17 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
             node.setActionStatus(status);
         }
         logger.info("Updated action {} status to {}", actionId, status);
+        updateActiveTaskAsync(actionId, status);
     }
 
     // Async procedure for external updates
     private void updateActiveTaskAsync(String actionId, ActionStatus status) {
-        try {
-            activeTaskActivity.updateActiveTask(actionId, status, currentGoal.getWorkflowId(), currentChannelId, currentUserId);
-        } catch (Exception e) {
-            logger.error("Error updating active task for action {}: {}", actionId, e.getMessage(), e);
-        }
+        logger.info("updateActiveTaskAsync for action {} with status {}", actionId, status);
+            try {
+                activeTaskActivity.updateActiveTask(actionId, status, currentGoal.getWorkflowId(), currentChannelId, currentUserId);
+            } catch (Exception e) {
+                logger.error("Error updating active task for action {}: {}", actionId, e.getMessage(), e);
+            }
     }
 
     private void updateActionOutput(String actionId, String output) {

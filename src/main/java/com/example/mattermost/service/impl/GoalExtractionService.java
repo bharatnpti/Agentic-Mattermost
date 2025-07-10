@@ -2,17 +2,16 @@ package com.example.mattermost.service.impl;
 
 import com.example.mattermost.domain.model.Goal;
 import com.example.mattermost.integration.llm.NlpService;
-import com.example.mattermost.service.GoalExtractionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
-public class DummyGoalExtractionService implements GoalExtractionService {
+public class GoalExtractionService implements com.example.mattermost.service.GoalExtractionService {
 
 
-    private static final Logger log = LoggerFactory.getLogger(DummyGoalExtractionService.class);
+    private static final Logger log = LoggerFactory.getLogger(GoalExtractionService.class);
 
     @Autowired
     private NlpService nlpService;
@@ -27,7 +26,7 @@ public class DummyGoalExtractionService implements GoalExtractionService {
 //        } catch (JsonProcessingException e) {
 //            throw new RuntimeException(e);
 //        }
-        log.debug("Extracted goal from NLP message: {}", goal);
+        log.info("Extracted goal from NLP message: {}", goal);
         return goal;
     }
 

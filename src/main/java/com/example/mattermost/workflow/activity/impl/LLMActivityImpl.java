@@ -1,11 +1,17 @@
 package com.example.mattermost.workflow.activity.impl;
 
+import com.example.mattermost.domain.CurrentContext;
+import com.example.mattermost.domain.MessageList;
+import com.example.mattermost.domain.MessageRequest;
+import com.example.mattermost.domain.Recipient;
 import com.example.mattermost.domain.model.*;
 import com.example.mattermost.integration.llm.NlpService;
+import com.example.mattermost.integration.mattermost.MattermostService;
 import com.example.mattermost.workflow.MeetingSchedulerWorkflowImpl;
 import com.example.mattermost.workflow.activity.LLMActivity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -20,6 +26,9 @@ public class LLMActivityImpl implements LLMActivity {
     @Autowired
     private NlpService nlpService;
 
+    @Autowired
+    private MattermostService mattermostService;
+
     @Override
     public boolean isActionComplete(String actionId, Map<String, Object> actionParams, Map<String, String> actionOutputs) {
         // Your existing logic here
@@ -29,30 +38,24 @@ public class LLMActivityImpl implements LLMActivity {
     @Override
     public LLMProcessingResult processActionWithLLM(LLMProcessingRequest request, String currentThreadId, String currentUserId, String currentChannelId) {
 
-        if(MeetingSchedulerWorkflowImpl.debug) {
-            System.out.println("Processing LLM Activity DEBUG");
-        }
-            // This is where the NLP service call happens - in the activity, not the workflow
-            String actionResult = nlpService.executeAction(
-                    request.getGoal(),
-                    request.getConvHistory(),
-                    request.getAction(),
-                    currentThreadId,
-                    currentUserId,
-                    currentChannelId
-            );
+        // This is where the NLP service call happens - in the activity, not the workflow
+        String actionResult = nlpService.executeAction(
+                request.getGoal(),
+                request.getConvHistory(),
+                request.getAction(),
+                currentThreadId,
+                currentUserId,
+                currentChannelId
+        );
 
-            ActionStatus actionStatus = nlpService.determineActionResult(
-                    request.getGoal(),
-                    request.getAction(),
-                    actionResult
-            );
+        ActionStatus actionStatus = nlpService.determineActionResult(
+                request.getGoal(),
+                request.getAction(),
+                actionResult
+        );
 
-        if(MeetingSchedulerWorkflowImpl.debug) {
-            System.out.println("Processing LLM Activity DEBUG");
-        }
 
-            return new LLMProcessingResult(true, actionResult, actionStatus);
+        return new LLMProcessingResult(true, actionResult, actionStatus);
 
     }
 
@@ -75,9 +78,9 @@ public class LLMActivityImpl implements LLMActivity {
 
 
     @Override
-    public String ask_user(Goal currentGoal, ActionNode action, String convHistory, String currentThreadId, String channelId, String currentUserId) {
+    public MessageList formulate_user_message(Goal currentGoal, ActionNode action, String convHistory, String currentThreadId, String channelId, String currentUserId) {
 
-        String askUser = nlpService.ask_user(
+        MessageList askUser = nlpService.formulate_user_message(
                 currentGoal.getGoal(),
                 action,
                 convHistory,
@@ -85,7 +88,34 @@ public class LLMActivityImpl implements LLMActivity {
                 channelId,
                 currentUserId
         );
-        logger.info("Asked user: {}", askUser);
+        logger.info("Ask user: {}", askUser);
         return askUser;
+    }
+
+    @Override
+    public String checkAndAskUser(MessageRequest messageRequest, String convHistory, CurrentContext currentContext) {
+        String checkAndAskUser = nlpService.checkAndAskUser(messageRequest, currentContext.getActionNode(), convHistory, currentContext.getCurrentThreadId(), currentContext.getCurrentChannelId(), currentContext.getCurrentUserId());
+        if("QUESTION".equalsIgnoreCase(checkAndAskUser) && messageRequest.getRecipient() == Recipient.REQUESTOR) {
+            ActionNode actionNode = currentContext.getActionNode();
+            Map<String, Object> toolContext = Map.of(
+                    "workflowId", actionNode.getWorkflowId(),
+                    "actionId", actionNode.getActionId(),
+                    "rootId", currentContext.getCurrentThreadId(),
+                    "channelId", currentContext.getCurrentChannelId(),
+                    "currentUserId", currentContext.getCurrentUserId()
+            );
+            ToolContext toolContext1 = new ToolContext(toolContext);
+
+            mattermostService.askRequestor( messageRequest.getMessage(),
+                    toolContext1
+                    );
+        } else if("QUESTION".equalsIgnoreCase(checkAndAskUser)) {
+            nlpService.askUser( messageRequest,
+                    currentContext.getActionNode(),
+                    currentContext.getCurrentThreadId(),
+                    currentContext.getCurrentChannelId(),
+                    currentContext.getCurrentUserId());
+        }
+        return "";
     }
 }

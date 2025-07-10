@@ -86,7 +86,7 @@ public class WorkflowController {
             MeetingSchedulerWorkflow workflow = workflowClient.newWorkflowStub(MeetingSchedulerWorkflow.class, workflowId);
 
             // Signal the workflow
-            workflow.onUserResponse(actionId, userInput, payload.threadId, payload.channelId);
+            workflow.onUserResponse(actionId, userInput, payload.getThreadId(), payload.getChannelId());
 
             logger.info("Signal onUserResponse sent successfully to workflowId: {}", workflowId);
             Map<String, String> response = new HashMap<>();

@@ -145,12 +145,13 @@ Prioritize creating a lean, efficient DAG by removing transitive dependencies. I
             2. AUTOMATED – If it can be executed without human interaction.
             3. COMPLETED - If the required action is completed.
             
+            ## Goal and current Action details:
             Goal - {Goal}
             Action ID - {ActionId}
             Action NAME - {ActionName}
             Action DESCRIPTION - {ActionDescription}
             
-            ###Conv history
+            ###Conv history for the current action
             {convHistory}
             ---
             
@@ -192,42 +193,35 @@ Prioritize creating a lean, efficient DAG by removing transitive dependencies. I
             
             """;
     public static final String ASK_USER = """
-            
-            You are an assistant orchestrating steps to achieve the goal:
-            
-            **"{goal}"**
-            
-            Now, execute the following action:
-            
-            **{actionName}**
-            Description: {actionDescription}
-            
-            Your task is to communicate with the user and collect the following data required to complete this step.
-            If a prompt template is provided, use it as the base and improve it if needed:
-            Prompt Template: "{prompt_template}"
-            {required_fields}
-            
-            ###Conv history
-            {convHistory}
-            
-            
-            Instructions:
-            - Generate a clear, friendly, and complete message to ask the user for the required information.
-            - Rephrase or enhance the prompt template if needed.
-            - Keep the tone concise and helpful.
-            - Use the available tools to send the generated message to all users listed in `required_users`.
-            - To send a message to any user other than requestor:
-                1. use getUsersList to fetch the list of users.
-                2. find the id of user.
-                3. use id of user to create a direct channel using createDirectChannel.
-                4. use sendPersonalMessage to send the message to that channel.
-                5. use updateAction to update the details of the action - use the channelId obtained in step 3.
-            - To reply to the user who has sent the message:
-                1. use askRequestor
-                
-            ###NOTE - 
-              1. Send message to request to any user only to get some information or confirmation.
-              2. Do not send message just to update the user.
+        You are an assistant orchestrating steps to achieve the goal:
+        
+        **"{goal}"**
+        
+        Now, execute the following action:
+        
+        **{actionName}**
+        Description: {actionDescription}
+        
+        Your task is to communicate with the user(s) and collect the following data required to complete this step.
+        If a prompt template is provided, use it as the base and improve it if needed:
+        Prompt Template: "{prompt_template}"
+        {required_fields}
+        
+        ###Conv history
+        {convHistory}
+        
+        Instructions:
+        - Generate a clear, friendly, and complete message to ask the user(s) for the required information.
+        - Rephrase or enhance the prompt template if needed.
+        - Keep the tone concise and helpful.
+        - For each message you generate, specify the recipient user.
+        
+        ##NOTE:
+        - use recipient = "REQUESTOR" is "OTHER"
+        
+        **Format the output as a JSON object.**
+        Return a list of message alongwith it's recipient
+            {formatInstructions}
             """;
 
     public static final String EVALUATE_RESPONSE_FORMAT = """
@@ -361,5 +355,76 @@ You cannot communicate with the user
                    }
                ]
             }
+            """;
+    public static final String CHECK_AND_ASK_USER = """
+            
+            -----
+            
+            You are an AI assistant analyzing a Message within the context of a specific action.
+            
+            **Your Goal:** Determine if the `message` is intended to:
+            
+            1.  **Ask a question or seek confirmation** from a user (requiring a response).
+            2.  **Notify a user about an update** (not necessarily requiring a direct response).
+            
+            ### Input:
+            
+              * **Message:**
+                {messageRequest}
+            
+              * **Current Action Details:**
+            
+                ```
+                Action Name: {actionName}
+                Action Description: {actionDescription}
+                ```
+            
+            ### Instructions:
+            
+            1.  **Analyze the `message` content from the `MessageRequest`:**
+            
+                  * Look for explicit questions, interrogative phrases, or keywords that indicate a query or a need for user input (e.g., "What is...", "Can you confirm...", "Please provide...", "Do you want...", question marks).
+                  * Identify phrases that suggest a call to action requiring a user response or decision.
+                  * Conversely, identify phrases that primarily convey information, status updates, or notifications without an explicit demand for interaction (e.g., "Your request has been processed.", "The status is now...", "We have completed...", "For your information...").
+            
+            2.  **Evaluate the `Current Action Details`:**
+            
+                  * Consider the **`Action Name`** for a high-level understanding of its purpose.
+                  * Crucially, examine the **`Action Description`**. Does it imply that this action *requires* input, confirmation, or a decision from a user to proceed or complete? Or is it an action that primarily involves processing, reporting, or informing?
+            
+            ### Output:
+            
+            Return one of the following labels:
+            
+              * **"QUESTION"**: If, based on the message content and the action's purpose, the `message` is clearly seeking information, a decision, or confirmation from the user.
+              * **"NOTIFICATION"**: If, based on the message content and the action's purpose, the `message` is informing the user about a status, an event, or a completed step, without explicitly requiring an immediate response to continue the process.
+            
+            -----
+            
+            """;
+    public static final String MESSAGE_USER = """
+            
+            Your task is to communicate with the user and send him the message.
+            
+            ##Message to sent to user-
+            {message}
+            
+            ##User identifier to whom message has to be sent-
+            {user}
+            
+            ##User identifier for the user(requestor) who has initiated the request-
+            {requestor}
+            
+            Instructions:.
+            - Use the available tools to send the generated message to the user.
+            - To send a message to any user other than requestor:
+                1. use getUsersList to fetch the list of users.
+                2. find the id of user.
+                3. use id of user to create a direct channel using createDirectChannel.
+                4. use sendPersonalMessage to send the message to that channel.
+                5. use updateAction to update the details of the action - use the channelId obtained in step 3.
+                
+            ##Note:
+            Never send message to requestor
             """;
 }
