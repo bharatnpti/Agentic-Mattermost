@@ -73,7 +73,7 @@ public class NlpService {
 
         ChatClient openAi4_1Client = ChatClient.builder(baseOpenAiChatModel.mutate().defaultOptions(OpenAiChatOptions.builder()
                         .model("o4-mini-2025-04-16").build()).build())
-//                .defaultAdvisors(new SimpleLoggerAdvisor())
+                .defaultAdvisors(new SimpleLoggerAdvisor())
                 .build();
 
 

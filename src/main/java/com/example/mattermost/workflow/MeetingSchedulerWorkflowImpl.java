@@ -405,6 +405,7 @@ public class MeetingSchedulerWorkflowImpl implements MeetingSchedulerWorkflow {
     private void updateActiveTaskAsync(String actionId, ActionStatus status) {
         logger.info("updateActiveTaskAsync for action {} with status {}", actionId, status);
             try {
+                //add user id who has responded
                 activeTaskActivity.updateActiveTask(actionId, status, currentGoal.getWorkflowId(), currentChannelId, currentUserId);
             } catch (Exception e) {
                 logger.error("Error updating active task for action {}: {}", actionId, e.getMessage(), e);

@@ -14,7 +14,7 @@ public interface ActiveTaskRepository extends org.springframework.data.jpa.repos
     List<ActiveTask> findByUserId(String userId);
     List<ActiveTask> findByStatus(ActionStatus status);
 
-    Optional<ActiveTask> findByWorkflowIdAndCurrentActionId(String channelId, String currentActionId);
+    List<ActiveTask> findByWorkflowIdAndCurrentActionId(String channelId, String currentActionId);
 
     List<ActiveTask> findByChannelIdAndUserId(String channelId, String userId);
 
