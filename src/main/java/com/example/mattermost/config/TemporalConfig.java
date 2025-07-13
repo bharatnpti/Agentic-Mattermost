@@ -37,10 +37,15 @@ public class TemporalConfig {
 
     @Bean
     public WorkflowServiceStubs workflowServiceStubs() {
+        String temporalServiceAddress = System.getenv("TEMPORAL_SERVICE_ADDRESS");
+        logger.info("temporalServiceAddress is : {}", temporalServiceAddress);
+        if(temporalServiceAddress == null || temporalServiceAddress.isEmpty()) {
+            temporalServiceAddress = TEMPORAL_SERVICE_ADDRESS;
+        }
         WorkflowServiceStubsOptions options = WorkflowServiceStubsOptions.newBuilder()
-                .setTarget(TEMPORAL_SERVICE_ADDRESS)
+                .setTarget(temporalServiceAddress)
                 .build();
-        logger.info("Configuring WorkflowServiceStubs to target: {}", TEMPORAL_SERVICE_ADDRESS);
+        logger.info("Configuring WorkflowServiceStubs to target: {}", temporalServiceAddress);
         return WorkflowServiceStubs.newInstance(options);
     }
 

@@ -32,6 +32,10 @@ public class ActionNode {
 
     private List<String> actionResponses = new ArrayList<>();
 
+    private int retries = 0;
+
+    private int waitInSeconds = 0;
+
     // Constructors
     public ActionNode() {
         this.actionStatus = ActionStatus.PENDING;

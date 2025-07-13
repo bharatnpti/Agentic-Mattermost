@@ -1,0 +1,95 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:latest
+    container_name: maestro-postgres
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: mysecretpassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - maestro-network
+
+  # Temporal Server
+  temporal:
+    image: temporalio/auto-setup:1.22.3
+    container_name: maestro-temporal
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PWD=mysecretpassword
+      - POSTGRES_SEEDS=postgres
+    ports:
+      - "7233:7233"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - maestro-network
+
+  # Temporal Web UI
+  temporal-web:
+    image: temporalio/web:latest
+    container_name: maestro-temporal-web
+    platform: linux/amd64
+    environment:
+      - TEMPORAL_GRPC_ENDPOINT=temporal:7233
+      - TEMPORAL_PERMIT_WRITE_API=true
+    ports:
+      - "8088:8088"
+    depends_on:
+      - temporal
+    networks:
+      - maestro-network
+
+  # Mattermost Preview
+  mattermost-preview:
+    image: mattermost/mattermost-preview
+    container_name: maestro-mattermost
+    ports:
+      - "8065:8065"
+    extra_hosts:
+      - "dockerhost:127.0.0.1"
+    networks:
+      - maestro-network
+
+
+  # Main Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: maestro-app
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/postgres
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=mysecretpassword
+      - OPEN_API_KEY=${OPENAI_API_KEY:-dummy}
+      - TEMPORAL_SERVICE_ADDRESS=temporal:7233
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    networks:
+      - maestro-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  maestro-network:
+    driver: bridge 
