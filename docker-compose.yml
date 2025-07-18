@@ -65,27 +65,27 @@ services:
 
 
   # Main Application
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: maestro-app
-    environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/postgres
-      - SPRING_DATASOURCE_USERNAME=postgres
-      - SPRING_DATASOURCE_PASSWORD=mysecretpassword
-      - OPEN_API_KEY=${OPENAI_API_KEY:-dummy}
-      - TEMPORAL_SERVICE_ADDRESS=temporal:7233
-    ports:
-      - "8080:8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      temporal:
-        condition: service_started
-    networks:
-      - maestro-network
-    restart: unless-stopped
+#  app:
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    container_name: maestro-app
+#    environment:
+#      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/postgres
+#      - SPRING_DATASOURCE_USERNAME=postgres
+#      - SPRING_DATASOURCE_PASSWORD=mysecretpassword
+#      - OPEN_API_KEY=${OPENAI_API_KEY:-dummy}
+#      - TEMPORAL_SERVICE_ADDRESS=temporal:7233
+#    ports:
+#      - "8080:8080"
+#    depends_on:
+#      postgres:
+#        condition: service_healthy
+#      temporal:
+#        condition: service_started
+#    networks:
+#      - maestro-network
+#    restart: unless-stopped
 
 volumes:
   postgres_data:

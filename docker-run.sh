@@ -147,10 +147,13 @@ start_services() {
 
     
     print_status "Services started successfully!"
-    print_status "Application: http://localhost:8080"
     print_status "Temporal Web UI: http://localhost:8088"
     print_status "Mattermost Web UI: http://localhost:8065"
     print_status "PostgreSQL: localhost:5432"
+    print_status "Infra Services Started, follow below steps to run agent"
+    print_status "export MATTERMOST_HOST={Value}"
+    print_status "export MATTERMOST_TOKEN={Value}"
+    print_status "docker-compose -p maestro -f docker-compose.app.yml up -d"
     
     if [ "$ENVIRONMENT" = "dev" ]; then
         print_status "Debug port: localhost:5005"

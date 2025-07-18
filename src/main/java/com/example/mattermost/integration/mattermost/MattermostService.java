@@ -27,7 +27,7 @@ public class MattermostService {
 
     private static final Logger log = LoggerFactory.getLogger(MattermostService.class);
     @Autowired
-    private com.example.mattermost.mattermost.MattermostApiClient mattermostApiClient;
+    private MattermostApiClient mattermostApiClient;
 
     @Autowired
     private ActiveTaskRepository activeTaskRepository;

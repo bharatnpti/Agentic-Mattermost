@@ -1,4 +1,4 @@
-package com.example.mattermost.mattermost;
+package com.example.mattermost.integration.mattermost;
 
 import com.example.mattermost.integration.mattermost.model.*;
 import org.slf4j.Logger;
@@ -7,21 +7,26 @@ import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.List;
 
 @Service
 public class MattermostApiClient {
-
-
     private static final Logger log = LoggerFactory.getLogger(MattermostApiClient.class);
     private final RestTemplate restTemplate;
-    private final String baseUrl = "http://localhost:8065/api/v4";
-    private final String bearerToken = "ihjaj3gxmjfetri8so8k396usa"; // Replace with your actual token
+    private String baseUrl = "http://localhost:8065/api/v4";
+    private String bearerToken = "tyfekwgwufrnmrw8zjfoqcw3br"; // Replace with your actual token
 
     public MattermostApiClient(RestTemplateBuilder restTemplateBuilder) {
         this.restTemplate = restTemplateBuilder.build();
+        String mattermostHost = System.getenv("MATTERMOST_HOST");
+        if(mattermostHost != null || !StringUtils.isEmpty(mattermostHost)) {
+            baseUrl = mattermostHost;
+        }
+        bearerToken = System.getenv("MATTERMOST_TOKEN");
+        log.info("MattermostApiClient baseUrl: {}, bearerToken: {}", baseUrl, bearerToken);
     }
 
     private HttpHeaders createHeaders() {
