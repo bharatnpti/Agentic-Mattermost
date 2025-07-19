@@ -142,9 +142,8 @@ func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
 
 	// 2. Check if the message starts with !maestro (case-insensitive)
 	messageLowercase := strings.ToLower(post.Message)
-	triggerPrefix := "!maestro"
 
-	if !strings.HasPrefix(messageLowercase, triggerPrefix) {
+	if !strings.HasPrefix(messageLowercase, TriggerPrefix) {
 		return
 	}
 
@@ -172,13 +171,8 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 }
 
 // CallWorkflowMessageAPI sends a message to the workflow API.
-func (p *Plugin) CallWorkflowMessageAPI(channelID, message, userID string, threadRootID string, agentUrl string) (*WorkflowMessageResponse, error) {
+func (p *Plugin) CallWorkflowMessageAPI(channelID, message, userID string, threadRootID string, agentUrl string, httpClient ...*http.Client) (*WorkflowMessageResponse, error) {
 	// Get the API endpoint from the configuration.
-	// Assuming the endpoint is stored in the plugin configuration, similar to MaestroURL.
-	// If not, this needs to be adjusted or hardcoded (though hardcoding is not ideal).
-	// For now, let's assume a configuration field `WorkflowMessageAPIURL`.
-	// If it's always localhost:8080, we can hardcode it.
-	// Given the problem description, it's localhost:8080.
 	apiURL := agentUrl + "/api/v1/workflow/message"
 
 	requestBody := WorkflowMessageRequest{
@@ -201,10 +195,20 @@ func (p *Plugin) CallWorkflowMessageAPI(channelID, message, userID string, threa
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// Use a default HTTP client. For production, consider configuring timeouts.
-	client := &http.Client{Timeout: 10 * time.Second}
+	// Use provided httpClient if given, else default.
+	var client *http.Client
+	if len(httpClient) > 0 && httpClient[0] != nil {
+		client = httpClient[0]
+	} else {
+		client = &http.Client{Timeout: 60 * time.Second}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
+		// Check for timeout error
+		if nerr, ok := err.(interface{ Timeout() bool }); ok && nerr.Timeout() {
+			p.API.LogError("Timeout occurred while sending request to workflow message API", "error", err, "url", apiURL)
+			return &WorkflowMessageResponse{Status: "timeout"}, nil
+		}
 		p.API.LogError("Failed to send request to workflow message API", "error", err, "url", apiURL)
 		return nil, errors.Wrap(err, "failed to send request")
 	}
