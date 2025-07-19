@@ -172,19 +172,20 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 }
 
 // CallWorkflowMessageAPI sends a message to the workflow API.
-func (p *Plugin) CallWorkflowMessageAPI(channelID, message, userID string) (*WorkflowMessageResponse, error) {
+func (p *Plugin) CallWorkflowMessageAPI(channelID, message, userID string, threadRootID string, agentUrl string) (*WorkflowMessageResponse, error) {
 	// Get the API endpoint from the configuration.
 	// Assuming the endpoint is stored in the plugin configuration, similar to MaestroURL.
 	// If not, this needs to be adjusted or hardcoded (though hardcoding is not ideal).
 	// For now, let's assume a configuration field `WorkflowMessageAPIURL`.
 	// If it's always localhost:8080, we can hardcode it.
 	// Given the problem description, it's localhost:8080.
-	apiURL := "http://localhost:8080/api/v1/workflow/message"
+	apiURL := agentUrl + "/api/v1/workflow/message"
 
 	requestBody := WorkflowMessageRequest{
 		ChannelId: channelID,
 		Message:   message,
 		UserId:    userID,
+		ThreadId:  threadRootID,
 	}
 
 	jsonData, err := json.Marshal(requestBody)

@@ -13,11 +13,12 @@ type WorkflowMessageRequest struct {
 	ChannelId string `json:"channelId"`
 	Message   string `json:"message"`
 	UserId    string `json:"userId"`
+	ThreadId  string `json:"threadId"`
 }
 
 // WorkflowMessageResponse defines the structure for the workflow message API response.
 // Assuming a simple response, can be expanded later if needed.
 type WorkflowMessageResponse struct {
-	Status  string `json:"status"`
-	Error   string `json:"error,omitempty"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
 }

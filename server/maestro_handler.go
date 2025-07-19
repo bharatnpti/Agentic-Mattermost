@@ -12,12 +12,15 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin"
 )
 
+const TriggerPrefix = "!hey-"
+
 type MaestroHandler struct {
 	API                  plugin.API
 	BotUserID            string
 	GetConfig            func() *configuration
 	CallGraphQLAgentFunc func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, pingInterval time.Duration, messageChan chan<- string, errorChan chan<- error)
 	plugin               *Plugin // Added field to hold the plugin instance
+	ProcessTaskFunc      func(agentName string, numMessages int, taskText string, channelID string, userID string, rootID string) error
 }
 
 func NewMaestroHandler(p *Plugin, api plugin.API, botUserID string, getConfig func() *configuration, callGraphQLAgentFunc func(parentCtx context.Context, apiKey string, conversationID string, userID string, tenantID string, channelIDSystemContext string, messages []Message, apiURL string, pingInterval time.Duration, messageChan chan<- string, errorChan chan<- error)) *MaestroHandler {
@@ -39,14 +42,13 @@ func (h *MaestroHandler) MessageHasBeenPosted(c *plugin.Context, post *model.Pos
 
 	// 2. Check if the message starts with !maestro (case-insensitive)
 	messageLowercase := strings.ToLower(post.Message)
-	triggerPrefix := "!maestro"
 
-	if !strings.HasPrefix(messageLowercase, triggerPrefix) {
+	if !strings.HasPrefix(messageLowercase, TriggerPrefix) {
 		return
 	}
 
 	// 3. Extract the arguments string
-	argumentsString := strings.TrimSpace(post.Message[len(triggerPrefix):])
+	//argumentsString := strings.TrimSpace(post.Message[len(TriggerPrefix):])
 
 	// 5. Add logging
 	h.API.LogInfo(
@@ -54,31 +56,38 @@ func (h *MaestroHandler) MessageHasBeenPosted(c *plugin.Context, post *model.Pos
 		"user_id", post.UserId,
 		"channel_id", post.ChannelId,
 		"original_message", post.Message,
-		"arguments_string", argumentsString,
+		"arguments_string", messageLowercase,
 	)
 
-	agentName, numMessages, text, err := h.parseMaestroArgsNewFormat(argumentsString)
-	// Test LogDebug call immediately after parseMaestroArgsNewFormat
-	h.API.LogDebug("DEBUG: MessageHasBeenPosted: After parseMaestroArgsNewFormat", "agentName", agentName, "numMessages", numMessages, "message: ", text, "err", fmt.Sprintf("%v", err))
+	agentName, numMessages, text, err := h.parseMaestroArgsNewFormat(messageLowercase)
+	h.API.LogInfo("DEBUG: MessageHasBeenPosted: After parseMaestroArgsNewFormat", "agentName", agentName, "numMessages", numMessages, "message: ", text, "err", fmt.Sprintf("%v", err))
 	if err != nil {
 		h.API.SendEphemeralPost(post.UserId, &model.Post{
 			ChannelId: post.ChannelId,
 			Message:   err.Error(),
 			RootId:    post.Id, // Thread the error message to the command
 		})
-		h.API.LogError("Failed to parse arguments for !maestro command", "error", err.Error(), "user_id", post.UserId, "arguments", argumentsString)
+		h.API.LogError("Failed to parse arguments for !maestro command", "error", err.Error(), "user_id", post.UserId, "arguments", messageLowercase)
 		return
 	}
 
 	// Pass `text` (the parsed task message) to processMaestroTask
-	if err := h.processMaestroTask(agentName, numMessages, text, post.ChannelId, post.UserId, post.Id); err != nil {
-		// Add a simpler debug log to ensure it prints, using standard fmt.Println
-		fmt.Printf("STANDARD_DEBUG: MessageHasBeenPosted: processMaestroTask returned non-nil error. Error: %#v\n", err)
-		// These LogDebug calls might not be showing up, keeping them for now.
-		h.API.LogDebug("DEBUG: MessageHasBeenPosted: Entered processMaestroTask error block.")
-		h.API.LogDebug("DEBUG: MessageHasBeenPosted: err value is", "err_val_sprintf", fmt.Sprintf("%#v", err))
-		h.API.LogDebug("DEBUG: MessageHasBeenPosted: err string is", "err_str", err.Error())
-		h.API.LogError("Error processing !maestro task", "error", err.Error(), "user_id", post.UserId, "task_name", agentName)
+	if h.ProcessTaskFunc != nil {
+		if err := h.ProcessTaskFunc(agentName, numMessages, text, post.ChannelId, post.UserId, post.Id); err != nil {
+			fmt.Printf("STANDARD_DEBUG: MessageHasBeenPosted: processMaestroTask returned non-nil error. Error: %#v\n", err)
+			h.API.LogDebug("DEBUG: MessageHasBeenPosted: Entered processMaestroTask error block.")
+			h.API.LogDebug("DEBUG: MessageHasBeenPosted: err value is", "err_val_sprintf", fmt.Sprintf("%#v", err))
+			h.API.LogDebug("DEBUG: MessageHasBeenPosted: err string is", "err_str", err.Error())
+			h.API.LogError("Error processing !maestro task", "error", err.Error(), "user_id", post.UserId, "task_name", agentName)
+		}
+	} else {
+		if err := h.processMaestroTask(agentName, numMessages, text, post.ChannelId, post.UserId, post.Id); err != nil {
+			fmt.Printf("STANDARD_DEBUG: MessageHasBeenPosted: processMaestroTask returned non-nil error. Error: %#v\n", err)
+			h.API.LogDebug("DEBUG: MessageHasBeenPosted: Entered processMaestroTask error block.")
+			h.API.LogDebug("DEBUG: MessageHasBeenPosted: err value is", "err_val_sprintf", fmt.Sprintf("%#v", err))
+			h.API.LogDebug("DEBUG: MessageHasBeenPosted: err string is", "err_str", err.Error())
+			h.API.LogError("Error processing !maestro task", "error", err.Error(), "user_id", post.UserId, "task_name", agentName)
+		}
 	}
 }
 
@@ -86,14 +95,18 @@ func (h *MaestroHandler) parseMaestroArgsNewFormat(argsString string) (agentName
 	h.API.LogInfo("Parsing Maestro arguments", "args", argsString)
 
 	fields := strings.Fields(argsString)
-	const DefaultNumMessages = 10
+	const DefaultNumMessages = 0
 	numMessages = DefaultNumMessages
 
 	taskTextStart := 0
 
 	// Check for optional agent name
-	if len(fields) > 0 && strings.HasPrefix(fields[0], "$") {
-		agentName = fields[0][1:] // strip leading $
+	if len(fields) > 0 && strings.HasPrefix(fields[0], TriggerPrefix) {
+		trimmed := strings.TrimPrefix(fields[0], TriggerPrefix)
+		split := strings.Fields(trimmed)
+		if len(split) > 0 {
+			agentName = split[0]
+		}
 		taskTextStart = 1
 	}
 
@@ -165,7 +178,7 @@ func (h *MaestroHandler) processMaestroTask(agentName string, numMessages int, t
 
 		// Call the workflow message API
 		if h.plugin != nil {
-			workflowResponse, workflowErr := h.plugin.CallWorkflowMessageAPI(channelID, taskText, userID)
+			workflowResponse, workflowErr := h.plugin.CallWorkflowMessageAPI(channelID, taskText, userID, threadRootID, found.Endpoint)
 			if workflowErr != nil {
 				h.API.LogError("Failed to call workflow message API", "error", workflowErr.Error(), "channelID", channelID, "userID", userID)
 
