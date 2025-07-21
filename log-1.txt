@@ -1,0 +1,9 @@
+messagePayload = {MessagePayload@17319} 
+ channelId = "w1ho6f47t3ni8xawytf9i7x6ec"
+ message = "with jasbir"
+ userId = "7djefe5w8jrh9jxiyppw5b5pma"
+ threadId = "54161bfjojn3bphfh78jfpk6zw"
+
+
+ "agentic-mattermost","original_message":"!hey-meeting with jasbir\n\n","arguments_string":"!hey-meeting with jasbir\n\n","user_id":"7djefe5w8jrh9jxiyppw5b5pma","channel_id":"w1ho6f47t3ni8xawytf9i7x6ec","sessionId":"ufu33efge3dppy8cct4w763mdo","requestId":"9hxniy6gp78n3bz9hwd9et858w","Id":"54161bfjojn3bphfh78jfpk6zw","RootId":""}
+ 2025-07-21 20:14:04 {"timestamp":"2025-07-21 14:44:04.728 Z","level":"info","msg":"Parsing Maestro arguments","caller":"app/plugin_api.go:1108","plugin_id":"agentic-mattermost","args":"!hey-meeting with jasbir\n\n"}
