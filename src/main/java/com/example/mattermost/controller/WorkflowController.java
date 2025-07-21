@@ -107,7 +107,8 @@ public class WorkflowController {
         String userId = messagePayload.getUserId(); // Optional: for tracking user context
         String threadId = messagePayload.getThreadId();
 
-        logger.info("Received message from channelId: {}, userId: {}, with content: '{}'", channelId, userId, message);
+        // Always log threadId for traceability
+        logger.info("Received message with threadId: {} (channelId: {}, userId: {}, content: '{}')", threadId, channelId, userId, message);
 
         try {
             // Check if there's already an active task for this channel
@@ -119,8 +120,7 @@ public class WorkflowController {
                 String workflowId = activeTask.getWorkflowId();
                 String currentActionId = activeTask.getCurrentActionId();
 
-                logger.info("Found active task for channelId: {}, workflowId: {}, treating message as user response",
-                        channelId, workflowId);
+                logger.info("Found active task for channelId: {}, workflowId: {}, threadId: {}, treating message as user response", channelId, workflowId, threadId);
 
                 // Create UserResponsePayload and call existing handleUserResponse method
                 UserResponsePayload responsePayload = new UserResponsePayload();
@@ -138,18 +138,18 @@ public class WorkflowController {
 
             } else {
                 // No active task, extract goal from message and start new workflow
-                logger.info("No active task found for channelId: {}, extracting goal from message", channelId);
+                logger.info("No active task found for channelId: {}, threadId: {}, extracting goal from message", channelId, threadId);
 
                 Goal extractedGoal = goalExtractionService.extractGoalFromMessage(message);
 
                 if (extractedGoal == null || extractedGoal.getGoal() == null || extractedGoal.getGoal().trim().isEmpty()) {
-                    logger.warn("Could not extract valid goal from message: '{}'", message);
+                    logger.warn("Could not extract valid goal from message: '{}' (threadId: {})", message, threadId);
                     Map<String, String> response = new HashMap<>();
                     response.put("error", "Could not understand your request. Please provide more details about what you'd like to schedule.");
                     return ResponseEntity.badRequest().body(response);
                 }
 
-                logger.info("Extracted goal: '{}' from message", extractedGoal.getGoal());
+                logger.info("Extracted goal: '{}' from message (threadId: {})", extractedGoal.getGoal(), threadId);
 
                 // Start new workflow
                 ResponseEntity<Map<String, String>> workflowResponse = startWorkflow(extractedGoal, channelId, userId, threadId);
@@ -157,26 +157,14 @@ public class WorkflowController {
                 // If workflow started successfully, create and save active task record
                 if (workflowResponse.getStatusCode() == HttpStatus.OK) {
                     String workflowId = workflowResponse.getBody().get("workflowId");
-
-//                    ActiveTask newTask = new ActiveTask();
-//                    newTask.setChannelId(channelId);
-//                    newTask.setWorkflowId(workflowId);
-//                    newTask.setUserId(userId);
-//                    newTask.setGoal(extractedGoal.getGoal());
-//                    newTask.setStatus(ActionStatus.PROCESSING);
-//                    newTask.setCreatedAt(java.time.LocalDateTime.now());
-//                    newTask.setLastInteraction(java.time.LocalDateTime.now());
-//                    newTask.setCurrentActionId("INITIAL"); // Set initial action ID
-//
-//                    activeTaskRepository.save(newTask);
-                    logger.info("Created new active task record for channelId: {}, workflowId: {}", channelId, workflowId);
+                    logger.info("Created new active task record for channelId: {}, workflowId: {}, threadId: {}", channelId, workflowId, threadId);
                 }
 
                 return workflowResponse;
             }
 
         } catch (Exception e) {
-            logger.error("Error handling message for channelId: {}", channelId, e);
+            logger.error("Error handling message for channelId: {}, threadId: {}", channelId, threadId, e);
             Map<String, String> errorResponse = new HashMap<>();
             errorResponse.put("error", "Failed to process message: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
