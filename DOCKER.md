@@ -210,3 +210,37 @@ docker system prune -a
 - Configure database connection pool settings
 - Monitor resource usage with `docker stats`
 - Consider using Docker volumes for persistent data 
+
+## OpenSearch & Fluent Bit Integration
+
+### Added Services
+- **opensearch**: Search and analytics engine (port 9200)
+- **opensearch-dashboards**: Web UI for OpenSearch (port 5601)
+- **fluent-bit**: Collects all Docker container logs and pushes them to OpenSearch
+
+### How It Works
+- All logs from containers (including the app) are tailed by Fluent Bit and sent to OpenSearch.
+- You can view/search logs in OpenSearch Dashboards at http://localhost:5601 (default login: no auth, security disabled for dev).
+
+### Usage
+1. Start all services:
+   ```bash
+   docker-compose up -d
+   ```
+2. Access OpenSearch Dashboards:
+   - http://localhost:5601
+   - Search index: `docker-logs-*`
+3. OpenSearch API:
+   - http://localhost:9200
+
+### Fluent Bit Config
+- Config file: `fluent-bit.conf` in project root
+- Input: Docker container logs
+- Output: OpenSearch (index: `docker-logs`)
+
+### Ports
+| Service                | Port |
+|------------------------|------|
+| OpenSearch             | 9200 |
+| OpenSearch Dashboards  | 5601 |
+| Fluent Bit (internal)  | 24224| 
