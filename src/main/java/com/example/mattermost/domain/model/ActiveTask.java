@@ -24,6 +24,9 @@ public class ActiveTask {
     @Column(name = "user_id")
     private String userId;
 
+    @Column(name = "thread_root_id")
+    private String threadRootId;
+
     @Column(name = "goal")
     private String goal;
 
@@ -73,4 +76,11 @@ public class ActiveTask {
     public LocalDateTime getLastInteraction() { return lastInteraction; }
     public void setLastInteraction(LocalDateTime lastInteraction) { this.lastInteraction = lastInteraction; }
 
+    public String getThreadRootId() {
+        return threadRootId;
+    }
+
+    public void setThreadRootId(String threadRootId) {
+        this.threadRootId = threadRootId;
+    }
 }

@@ -1,7 +1,7 @@
 package com.example.mattermost.config;
 
 import com.example.mattermost.MeetingSchedulerAppMain;
-import com.example.mattermost.workflow.MeetingSchedulerWorkflowImpl;
+import com.example.mattermost.refactor.workflow.DagExecutorWorkflowImpl;
 import com.example.mattermost.workflow.activity.ActiveTaskActivity;
 import com.example.mattermost.workflow.activity.impl.AskUserActivityImpl;
 import com.example.mattermost.workflow.activity.impl.LLMActivityImpl;
@@ -67,8 +67,8 @@ public class TemporalConfig {
         Worker worker = workerFactory.newWorker(TASK_QUEUE);
 
         // Register Workflow Implementation
-        worker.registerWorkflowImplementationTypes(MeetingSchedulerWorkflowImpl.class);
-        logger.info("Registered workflow implementation: {}", MeetingSchedulerWorkflowImpl.class.getName());
+        worker.registerWorkflowImplementationTypes(DagExecutorWorkflowImpl.class);
+        logger.info("Registered workflow implementation: {}", DagExecutorWorkflowImpl.class.getName());
 
         // Register Activity Implementations
         // Assuming AskUserActivityImpl and ValidateInputActivityImpl will be Spring beans

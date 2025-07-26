@@ -84,7 +84,7 @@ Prioritize creating a lean, efficient DAG by removing transitive dependencies. I
                     Action:
                     {action}
                     
-                    Execution Result:
+                    Execution History:
                     {result}
                     
                     Instructions:

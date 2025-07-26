@@ -3,10 +3,18 @@ package com.example.mattermost.controller;
 import com.example.mattermost.MeetingSchedulerAppMain;
 import com.example.mattermost.domain.model.*;
 import com.example.mattermost.domain.repository.ActiveTaskRepository;
-import com.example.mattermost.service.GoalExtractionService;
+import com.example.mattermost.refactor.workflow.ChildWorkflowImpl;
+import com.example.mattermost.refactor.workflow.DagExecutorWorkflow;
+import com.example.mattermost.refactor.workflow.DagExecutorWorkflowImpl;
+import com.example.mattermost.refactor.workflow.WorkflowQueryActivityImpl;
+import com.example.mattermost.service.GoalExtractionActivity;
 import com.example.mattermost.workflow.MeetingSchedulerWorkflow;
+import com.example.mattermost.workflow.activity.LLMActivity;
 import io.temporal.client.WorkflowClient;
 import io.temporal.client.WorkflowOptions;
+import io.temporal.serviceclient.WorkflowServiceStubs;
+import io.temporal.worker.Worker;
+import io.temporal.worker.WorkerFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,6 +25,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Duration;
 import java.util.*;
 
 @RestController
@@ -26,18 +35,25 @@ public class WorkflowController {
     private static final Logger logger = LoggerFactory.getLogger(WorkflowController.class);
     private final WorkflowClient workflowClient;
     private final ActiveTaskRepository activeTaskRepository;
-    private final GoalExtractionService goalExtractionService;
+    private final GoalExtractionActivity goalExtractionActivity;
 
     // Using constant from MeetingSchedulerAppMain, consider moving to application properties or TemporalConfig
     private static final String TASK_QUEUE = MeetingSchedulerAppMain.TASK_QUEUE;
 
+    private LLMActivity llmActivity;
+
+    private static final String TASK_QUEUE_PARENT = "parent-workflow-queue";
+    private static final String TASK_QUEUE_CHILD = "child-workflow-queue";
+
     @Autowired
     public WorkflowController(WorkflowClient workflowClient,
                               ActiveTaskRepository activeTaskRepository,
-                              GoalExtractionService goalExtractionService) {
+                              GoalExtractionActivity goalExtractionActivity,
+                              LLMActivity llmActivity) {
         this.workflowClient = workflowClient;
         this.activeTaskRepository = activeTaskRepository;
-        this.goalExtractionService = goalExtractionService;
+        this.goalExtractionActivity = goalExtractionActivity;
+        this.llmActivity = llmActivity;
     }
 
     @PostMapping("/start")
@@ -100,18 +116,20 @@ public class WorkflowController {
         }
     }
 
-    @PostMapping("/message")
-    public ResponseEntity<Map<String, String>> handleMessage(@RequestBody MessagePayload messagePayload) {
+    @PostMapping("/message_old")
+    public ResponseEntity<Map<String, String>> handleMessage_old(@RequestBody MessagePayload messagePayload) {
         String channelId = messagePayload.getChannelId();
         String message = messagePayload.getMessage();
         String userId = messagePayload.getUserId(); // Optional: for tracking user context
-        String threadId = messagePayload.getThreadId();
+        String threadRootId = messagePayload.getThreadId();
 
-        logger.info("Received message from channelId: {}, userId: {}, with content: '{}'", channelId, userId, message);
+        logger.info("Received message from channelId: {}, userId: {}, threadId: {} with content: '{}'", channelId, userId, threadRootId, message);
 
         try {
             // Check if there's already an active task for this channel
-            List<ActiveTask> existingTask = activeTaskRepository.findByChannelIdAndUserId(channelId, userId);
+//            List<ActiveTask> existingTask = activeTaskRepository.findByChannelIdAndUserId(channelId, userId);
+
+            List<ActiveTask> existingTask = activeTaskRepository.findByThreadRootId(threadRootId);
 
             if (!existingTask.isEmpty()) {
                 // There's an active task, treat this as a user response
@@ -127,7 +145,7 @@ public class WorkflowController {
                 responsePayload.setWorkflowId(workflowId);
                 responsePayload.setActionId(currentActionId);
                 responsePayload.setUserInput(message);
-                responsePayload.setThreadId(threadId);
+                responsePayload.setThreadId(threadRootId);
                 responsePayload.setChannelId(channelId);
 
                 // Update the active task with the latest interaction
@@ -140,7 +158,7 @@ public class WorkflowController {
                 // No active task, extract goal from message and start new workflow
                 logger.info("No active task found for channelId: {}, extracting goal from message", channelId);
 
-                Goal extractedGoal = goalExtractionService.extractGoalFromMessage(message);
+                Goal extractedGoal = goalExtractionActivity.extractGoalFromMessage(message);
 
                 if (extractedGoal == null || extractedGoal.getGoal() == null || extractedGoal.getGoal().trim().isEmpty()) {
                     logger.warn("Could not extract valid goal from message: '{}'", message);
@@ -152,7 +170,7 @@ public class WorkflowController {
                 logger.info("Extracted goal: '{}' from message", extractedGoal.getGoal());
 
                 // Start new workflow
-                ResponseEntity<Map<String, String>> workflowResponse = startWorkflow(extractedGoal, channelId, userId, threadId);
+                ResponseEntity<Map<String, String>> workflowResponse = startWorkflow(extractedGoal, channelId, userId, threadRootId);
 
                 // If workflow started successfully, create and save active task record
                 if (workflowResponse.getStatusCode() == HttpStatus.OK) {
@@ -173,6 +191,76 @@ public class WorkflowController {
                 }
 
                 return workflowResponse;
+            }
+
+        } catch (Exception e) {
+            logger.error("Error handling message for channelId: {}", channelId, e);
+            Map<String, String> errorResponse = new HashMap<>();
+            errorResponse.put("error", "Failed to process message: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
+        }
+    }
+
+    @PostMapping("/message")
+    public ResponseEntity<Map<String, String>> handleMessage(@RequestBody MessagePayload messagePayload) {
+        String channelId = messagePayload.getChannelId();
+        String message = messagePayload.getMessage();
+        String userId = messagePayload.getUserId();
+        String threadRootId = messagePayload.getThreadId();
+
+        logger.info("Received message from channelId: {}, userId: {}, threadId: {} with content: '{}'",
+                channelId, userId, threadRootId, message);
+
+        try {
+            List<ActiveTask> existingTask = activeTaskRepository.findByThreadRootId(threadRootId);
+
+            if (!existingTask.isEmpty()) {
+                ActiveTask activeTask = existingTask.stream()
+                        .filter(task -> task.getStatus() == ActionStatus.WAITING_FOR_INPUT)
+                        .findFirst()
+                        .orElseThrow();
+                String workflowId = activeTask.getWorkflowId();
+                String currentActionId = activeTask.getCurrentActionId();
+
+                // TODO
+                return ResponseEntity.accepted().body(Map.of("workflowId", workflowId));
+
+            } else {
+                String workflowId = "Meeting_Workflow_" + threadRootId;
+                logger.info("No active task found for threadId: {}, workflowId: {}", threadRootId, workflowId);
+
+                WorkflowServiceStubs service = WorkflowServiceStubs.newLocalServiceStubs();
+                WorkflowClient client = WorkflowClient.newInstance(service);
+                WorkerFactory factory = WorkerFactory.newInstance(client);
+
+                // Register activities on PARENT worker since they're called from parent workflow
+                Worker parentWorker = factory.newWorker(TASK_QUEUE_PARENT);
+                parentWorker.registerWorkflowImplementationTypes(DagExecutorWorkflowImpl.class);
+                parentWorker.registerActivitiesImplementations(
+                        new WorkflowQueryActivityImpl(client),
+                        goalExtractionActivity  // Add this to parent worker!
+                );
+
+                Worker childWorker = factory.newWorker(TASK_QUEUE_CHILD);
+                childWorker.registerWorkflowImplementationTypes(ChildWorkflowImpl.class);
+                childWorker.registerActivitiesImplementations(llmActivity);  // Only llmActivity for child
+
+                factory.start();
+                logger.info("✅ All workers started successfully");
+
+                WorkflowOptions parentOptions = WorkflowOptions.newBuilder()
+                        .setWorkflowId(workflowId)
+                        .setTaskQueue(TASK_QUEUE_PARENT)
+                        .setWorkflowExecutionTimeout(Duration.ofMinutes(30))
+                        .setWorkflowRunTimeout(Duration.ofMinutes(15))
+                        .build();
+
+                DagExecutorWorkflow workflow = client.newWorkflowStub(DagExecutorWorkflow.class, parentOptions);
+
+                logger.info("Starting workflow execution...");
+                WorkflowClient.start(workflow::executeGoal, workflowId, message, channelId, threadRootId, userId);
+
+                return ResponseEntity.accepted().body(Map.of("workflowId", workflowId));
             }
 
         } catch (Exception e) {

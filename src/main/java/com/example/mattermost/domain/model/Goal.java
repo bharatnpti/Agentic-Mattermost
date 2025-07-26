@@ -28,6 +28,8 @@ public class Goal {
 
     private String workflowId;
 
+    private boolean isComplete;
+
     // Getters and setters
     public String getGoal() {
         return goal;
@@ -51,6 +53,14 @@ public class Goal {
 
     public void setRelationships(List<Relationship> relationships) {
         this.relationships = relationships;
+    }
+
+    public boolean isComplete() {
+        return isComplete;
+    }
+
+    public void setComplete(boolean complete) {
+        isComplete = complete;
     }
 
     @JsonIgnore

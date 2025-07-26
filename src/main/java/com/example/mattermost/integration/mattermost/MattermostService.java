@@ -1,12 +1,12 @@
 package com.example.mattermost.integration.mattermost;
 
-import com.example.mattermost.*;
 import com.example.mattermost.domain.model.ActionStatus;
 import com.example.mattermost.domain.model.ActiveTask;
 import com.example.mattermost.domain.model.ChannelMapping;
 import com.example.mattermost.domain.repository.ActiveTaskRepository;
 import com.example.mattermost.domain.repository.ChannelMappingRepository;
 import com.example.mattermost.integration.mattermost.model.MattermostChannel;
+import com.example.mattermost.integration.mattermost.model.Post;
 import com.example.mattermost.integration.mattermost.model.SendPostRequest;
 import com.example.mattermost.integration.mattermost.model.User;
 import org.slf4j.Logger;
@@ -50,19 +50,21 @@ public class MattermostService {
 
     @Tool(description = "Send Message to a channel")
     public String sendPersonalMessage(String channelId, String userId, String message, ToolContext toolContext) {
+
+        log.info("Send Message to a channel: {}, {}", channelId, message);
+        Post post = mattermostApiClient.sendPost(SendPostRequest.builder()
+                .channel_id(channelId)
+                .message(message)
+                .build());
         try {
-            extracted(channelId, userId, toolContext);
+            extracted(channelId, userId, toolContext, post);
         } catch (Exception e) {
             log.error("Error while sending personal message to channelId: {}, message: {}", channelId, message, e);
         }
-        log.info("Send Message to a channel: {}, {}", channelId, message);
-        return mattermostApiClient.sendPost(SendPostRequest.builder()
-                        .channel_id(channelId)
-                        .message(message)
-                .build()).toString();
+        return post.toString();
     }
 
-    private void extracted(String channelId, String userId, ToolContext toolContext) {
+    private void extracted(String channelId, String userId, ToolContext toolContext, Post post) {
         String actionId = toolContext.getContext().get("actionId").toString();
         String workflowId = toolContext.getContext().get("workflowId").toString();
         Optional<ActiveTask> byChannelIdAndUserIdAndCurrentActionIdAndWorkflowId = activeTaskRepository.findByChannelIdAndUserIdAndCurrentActionIdAndWorkflowId(channelId, userId, actionId, workflowId);
@@ -73,13 +75,15 @@ public class MattermostService {
         activeTask.setCurrentActionId(actionId);
         activeTask.setWorkflowId(workflowId);
         activeTask.setStatus(ActionStatus.WAITING_FOR_INPUT);
+        activeTask.setThreadRootId(post.getRoot_id());
         activeTaskRepository.save(activeTask);
     }
 
-    private void extracted(String channelId, ToolContext toolContext) {
+    private void extractedRequestor(String channelId, ToolContext toolContext) {
         String userId = toolContext.getContext().get("currentUserId").toString();
         String actionId = toolContext.getContext().get("actionId").toString();
         String workflowId = toolContext.getContext().get("workflowId").toString();
+        String rootId = toolContext.getContext().get("rootId").toString();
         Optional<ActiveTask> byChannelIdAndUserIdAndCurrentActionIdAndWorkflowId = activeTaskRepository.findByChannelIdAndUserIdAndCurrentActionIdAndWorkflowId(channelId, userId, actionId, workflowId);
         log.info("Saving active tasks for channelId: {}, userId: {}, present: {}", channelId, userId, byChannelIdAndUserIdAndCurrentActionIdAndWorkflowId.isPresent());
         ActiveTask activeTask = byChannelIdAndUserIdAndCurrentActionIdAndWorkflowId.orElseGet(ActiveTask::new);
@@ -88,6 +92,7 @@ public class MattermostService {
         activeTask.setCurrentActionId(actionId);
         activeTask.setWorkflowId(workflowId);
         activeTask.setStatus(ActionStatus.WAITING_FOR_INPUT);
+        activeTask.setThreadRootId(rootId);
         activeTaskRepository.save(activeTask);
     }
 
@@ -97,7 +102,7 @@ public class MattermostService {
         String rootId = toolContext.getContext().get("rootId").toString();
         log.info("Send Message to a Requestor, channelId: {}, rootId: {}, {}", channelId, rootId, message);
         try {
-            extracted(channelId, toolContext);
+            extractedRequestor(channelId, toolContext);
         } catch (Exception e) {
             log.error("Error while sending requestor", e);
         }

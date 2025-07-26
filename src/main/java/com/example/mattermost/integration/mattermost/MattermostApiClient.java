@@ -17,15 +17,15 @@ public class MattermostApiClient {
     private static final Logger log = LoggerFactory.getLogger(MattermostApiClient.class);
     private final RestTemplate restTemplate;
     private String baseUrl = "http://localhost:8065/api/v4";
-    private String bearerToken = "tyfekwgwufrnmrw8zjfoqcw3br"; // Replace with your actual token
+    private String bearerToken = "tfad7xwue7dqbqtw1imn3q8m9a"; // Replace with your actual token
 
     public MattermostApiClient(RestTemplateBuilder restTemplateBuilder) {
         this.restTemplate = restTemplateBuilder.build();
-        String mattermostHost = System.getenv("MATTERMOST_HOST");
-        if(mattermostHost != null || !StringUtils.isEmpty(mattermostHost)) {
-            baseUrl = mattermostHost;
-        }
-        bearerToken = System.getenv("MATTERMOST_TOKEN");
+//        String mattermostHost = System.getenv("MATTERMOST_HOST");
+//        if(mattermostHost != null || !StringUtils.isEmpty(mattermostHost)) {
+//            baseUrl = mattermostHost;
+//        }
+//        bearerToken = System.getenv("MATTERMOST_TOKEN");
         log.info("MattermostApiClient baseUrl: {}, bearerToken: {}", baseUrl, bearerToken);
     }
 
@@ -112,3 +112,8 @@ public class MattermostApiClient {
         return response.getBody();
     }
 }
+
+//curl --request GET \
+//        --url http://localhost:8065/api/v4/users \
+//        --header 'Accept: application/json' \
+//        --header 'Authorization: Bearer 6da8ysb4zjbi3d74g3aygnqyty'

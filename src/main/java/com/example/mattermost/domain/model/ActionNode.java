@@ -1,5 +1,6 @@
 package com.example.mattermost.domain.model;
 
+import com.example.mattermost.refactor.model.ActionResult;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.validation.constraints.NotBlank;
@@ -113,9 +114,50 @@ public class ActionNode {
         return actionResponses;
     }
 
+    public String getConvHistory() {
+        return String.join(System.lineSeparator(), actionResponses);
+    }
+
     public void setActionResponses(List<String> actionResponses) {
         this.actionResponses = actionResponses != null ? actionResponses : new ArrayList<>();
     }
+
+    public void markRunning() {
+        this.setActionStatus(ActionStatus.PROCESSING);
+    }
+
+    public void markCompleted(ActionResult result) {
+        if (result != null) {
+            this.setActionStatus(ActionStatus.COMPLETED);
+            this.setActionResponse(result.getOutput());
+
+            // Optional: track history
+            if (this.getActionResponses() != null) {
+                this.getActionResponses().add(result.getOutput());
+            }
+        }
+    }
+
+    public void markFailed(ActionResult result) {
+        if (result != null) {
+            this.setActionStatus(ActionStatus.FAILED);
+            this.setActionResponse(result.getMessage());
+
+            // Optional: track failure messages or attempts
+            if (this.getActionResponses() != null) {
+                this.getActionResponses().add("FAILED: " + result.getMessage());
+            }
+        }
+    }
+
+    public void markWaiting(ActionResult result) {
+        if (result != null) {
+            this.setActionStatus(ActionStatus.WAITING_FOR_INPUT);
+            this.setActionResponse(result.getMessage());
+        }
+    }
+
+
 
     @Override
     public boolean equals(Object o) {

@@ -7,7 +7,7 @@ public class CurrentContext {
 
     private Goal goal;
 
-    private ActionNode actionNode;
+    private ActionNode currentActionNode;
     private String currentThreadId;
 
     private String currentChannelId;
@@ -19,18 +19,18 @@ public class CurrentContext {
 
     public CurrentContext(Goal goal, ActionNode action, String currentThreadId, String currentChannelId, String currentUserId) {
         this.goal = goal;
-        this.actionNode = action;
+        this.currentActionNode = action;
         this.currentThreadId = currentThreadId;
         this.currentChannelId = currentChannelId;
         this.currentUserId = currentUserId;
     }
 
-    public ActionNode getActionNode() {
-        return actionNode;
+    public ActionNode getCurrentActionNode() {
+        return currentActionNode;
     }
 
-    public void setActionNode(ActionNode actionNode) {
-        this.actionNode = actionNode;
+    public void setCurrentActionNode(ActionNode currentActionNode) {
+        this.currentActionNode = currentActionNode;
     }
 
     public String getCurrentThreadId() {
@@ -63,5 +63,16 @@ public class CurrentContext {
 
     public void setGoal(Goal goal) {
         this.goal = goal;
+    }
+
+    @Override
+    public String toString() {
+        return "CurrentContext{" +
+                "goal=" + goal +
+                ", currentActionNode=" + currentActionNode +
+                ", currentThreadId='" + currentThreadId + '\'' +
+                ", currentChannelId='" + currentChannelId + '\'' +
+                ", currentUserId='" + currentUserId + '\'' +
+                '}';
     }
 }

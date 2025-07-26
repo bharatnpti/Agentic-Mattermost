@@ -21,14 +21,26 @@ public interface LLMActivity {
      * Process an action using LLM - this moves the NLP service call out of the workflow
      * and into an activity where it belongs
      */
-    @ActivityMethod
-    LLMProcessingResult processActionWithLLM(LLMProcessingRequest request, String currentThreadId, String currentUserId, String currentChannelId);
+//    @ActivityMethod
+//    LLMProcessingResult processActionWithLLM(LLMProcessingRequest request, String currentThreadId, String currentUserId, String currentChannelId);
 
     String evaluateAndProcessUserInput(Goal currentGoal, ActionNode action, String userInput);
 
-    ActionStatus determineActionType(Goal currentGoal, ActionNode action, String string);
+//    ActionStatus determineActionType(Goal currentGoal, ActionNode action, String convHistory);
 
-    MessageList formulate_user_message(Goal currentGoal, ActionNode action, String convHistory, String currentThreadId, String channelId, String currentUserId);
+//    MessageList formulate_user_message(Goal currentGoal, ActionNode action, String convHistory, String currentThreadId, String channelId, String currentUserId);
 
-    String checkAndAskUser(MessageRequest messageRequest, String convHistory, CurrentContext currentContext);
+//    String checkAndAskUser(MessageRequest messageRequest, String convHistory, CurrentContext currentContext);
+
+    @ActivityMethod
+    ActionStatus determineActionType(CurrentContext context);
+
+    @ActivityMethod
+    MessageList formulate_user_message(CurrentContext context);
+
+    @ActivityMethod
+    String checkAndAskUser(MessageRequest messageRequest, CurrentContext context);
+
+    @ActivityMethod
+    LLMProcessingResult processActionWithLLM(CurrentContext context);
 }

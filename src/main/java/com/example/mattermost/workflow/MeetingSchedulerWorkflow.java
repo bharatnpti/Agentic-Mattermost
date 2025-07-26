@@ -1,9 +1,13 @@
 package com.example.mattermost.workflow;
 
+import com.example.mattermost.domain.model.ActionStatus;
 import com.example.mattermost.domain.model.Goal;
+import io.temporal.workflow.QueryMethod;
 import io.temporal.workflow.SignalMethod;
 import io.temporal.workflow.WorkflowInterface;
 import io.temporal.workflow.WorkflowMethod;
+
+import java.util.List;
 import java.util.Map;
 
 @WorkflowInterface
