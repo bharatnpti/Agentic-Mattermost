@@ -263,7 +263,6 @@ public class NlpService {
             ChatClient chatClient1 = chatClient.get(openai4_1);
             ChatResponse response = chatClient1.prompt(prompt).call().chatResponse();
             String text = response.getResult().getOutput().getText();
-            logger.info("Raw LLM response for action creation: {}", text);
             return actionsConverter.convert(text);
         } catch (Exception e) {
             logger.error("Error calling LLM for action creation: {}", e.getMessage(), e);
@@ -279,7 +278,7 @@ public class NlpService {
                         "ActionId", action.getActionId(),
                         "ActionName", action.getActionName(),
                         "ActionDescription", action.getActionDescription(),
-                        "convHistory", "convHistory"
+                        "convHistory", action.getConvHistory()
                 )
         );
 
@@ -363,7 +362,7 @@ public class NlpService {
         BeanOutputConverter<MessageList> messageRequestConverter = new BeanOutputConverter<>(MessageList.class);
         Prompt prompt = promptTemplate.create(Map.of(
                 "message", messageRequest.getMessage(),
-                        "user", messageRequest.getRecipient(),
+                        "user", messageRequest.getUser(),
                 "threadId", currentThreadId,
                 "requestor", currentUserId,
                 "channelId", currentChannelId
@@ -394,7 +393,6 @@ public class NlpService {
 
     public MessageList formulate_user_message(CurrentContext context) {
         ActionNode action = context.getCurrentActionNode();
-        String convHistory = String.join(System.lineSeparator(), action.getActionResponses());
         PromptTemplate promptTemplate = new PromptTemplate(PromptHolder.ASK_USER);
         String promptTemplate1 = action.getActionParams().get("prompt_template") == null ? "" : action.getActionParams().get("prompt_template").toString();
         Object requiredFields = action.getActionParams().get("required_fields")  == null ? "" : action.getActionParams().get("required_fields").toString();
@@ -404,8 +402,10 @@ public class NlpService {
                         "actionDescription", action.getActionDescription(),
                         "prompt_template", promptTemplate1,
                         "required_fields", requiredFields,
-                        "convHistory", convHistory,
-                        "formatInstructions", messageRequestConverter.getFormat()
+                        "convHistory", action.getConvHistory(),
+                        "formatInstructions", messageRequestConverter.getFormat(),
+                "userId", context.getUser().getId(),
+                "userName", context.getUser().getUsername()
                 )
         );
 
@@ -414,7 +414,8 @@ public class NlpService {
                 "actionId", action.getActionId(),
                 "rootId", context.getCurrentThreadId(),
                 "channelId", context.getCurrentChannelId(),
-                "currentUserId", context.getCurrentUserId()
+                "currentUserId", context.getUser().getId(),
+                "currentUser", context.getUser().getFirst_name()
         );
 
         try {
@@ -447,7 +448,7 @@ public class NlpService {
                 "actionId", action.getActionId(),
                 "rootId", context.getCurrentThreadId(),
                 "channelId", context.getCurrentChannelId(),
-                "currentUserId", context.getCurrentUserId()
+                "currentUserId", context.getUser()
         );
 
         ChatClient chatClient1 = chatClient.get(openai4_1);

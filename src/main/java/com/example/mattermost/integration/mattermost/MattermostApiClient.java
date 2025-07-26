@@ -1,6 +1,8 @@
 package com.example.mattermost.integration.mattermost;
 
 import com.example.mattermost.integration.mattermost.model.*;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.web.client.RestTemplateBuilder;
@@ -10,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.Collections;
 import java.util.List;
 
 @Service
@@ -109,6 +112,31 @@ public class MattermostApiClient {
                 entity,
                 MattermostChannel.class
         );
+        return response.getBody();
+    }
+
+    public User getUserById(String id) {
+        String url = baseUrl + "/users/" + id;
+        HttpHeaders headers = createHeaders();
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+
+        ResponseEntity<User> response = restTemplate.exchange(
+                url,
+                HttpMethod.GET,
+                entity,
+                User.class
+        );
+
+        log.info("User: {}", response.getBody());
+
+//        User user = null;
+//        try {
+//            user = new ObjectMapper().readValue(response.getBody(), User.class);
+//        } catch (JsonProcessingException e) {
+//            throw new RuntimeException(e);
+//        }
+
         return response.getBody();
     }
 }

@@ -194,15 +194,17 @@ Prioritize creating a lean, efficient DAG by removing transitive dependencies. I
             """;
     public static final String ASK_USER = """
         You are an assistant orchestrating steps to achieve the goal:
-        
         **"{goal}"**
         
-        Now, execute the following action:
-        
+        Current Action:
         **{actionName}**
         Description: {actionDescription}
         
-        Your task is to communicate with the user(s) and collect the following data required to complete this step.
+        the latest messgae in conv history is sent by -
+        userId: {userId}
+        userName: {userName}
+        
+        Your task is to formulate the message to ask for the required information with the user(s) and collect the following data required to complete this step.
         If a prompt template is provided, use it as the base and improve it if needed:
         Prompt Template: "{prompt_template}"
         {required_fields}
@@ -214,10 +216,8 @@ Prioritize creating a lean, efficient DAG by removing transitive dependencies. I
         - Generate a clear, friendly, and complete message to ask the user(s) for the required information.
         - Rephrase or enhance the prompt template if needed.
         - Keep the tone concise and helpful.
-        - For each message you generate, specify the recipient user.
-        
-        ##NOTE:
-        - use recipient = "REQUESTOR" is "OTHER"
+        - For each message you generate, specify the recipient user name(mandatory) and user id(if present).
+      
         
         **Format the output as a JSON object.**
         Return a list of message alongwith it's recipient
@@ -412,7 +412,7 @@ You cannot communicate with the user
             ##User identifier to whom message has to be sent-
             {user}
             
-            ##User identifier for the user(requestor) who has initiated the request-
+            ##User(requestor) who has initiated the request-
             {requestor}
             
             Instructions:.

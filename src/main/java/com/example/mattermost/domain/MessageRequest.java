@@ -1,17 +1,20 @@
 package com.example.mattermost.domain;
 
+import com.example.mattermost.integration.mattermost.model.User;
+
 import java.util.List;
 
 public class MessageRequest {
-    private Recipient recipient;
+    private MUser user;
     private String message;
 
-    public Recipient getRecipient() {
-        return recipient;
+
+    public MUser getUser() {
+        return user;
     }
 
-    public void setRecipient(Recipient recipient) {
-        this.recipient = recipient;
+    public void setUser(MUser user) {
+        this.user = user;
     }
 
     public String getMessage() {
@@ -25,9 +28,9 @@ public class MessageRequest {
     @Override
     public String toString() {
         return "MessageRequest{" +
-               "recipient='" + recipient + '\'' +
-               ", message='" + message + '\'' +
-               '}';
+                "user=" + user +
+                ", message='" + message + '\'' +
+                '}';
     }
 }
 

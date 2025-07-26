@@ -115,7 +115,7 @@ public class ActionNode {
     }
 
     public String getConvHistory() {
-        return String.join(System.lineSeparator(), actionResponses);
+        return String.join(System.lineSeparator() + System.lineSeparator(), actionResponses);
     }
 
     public void setActionResponses(List<String> actionResponses) {

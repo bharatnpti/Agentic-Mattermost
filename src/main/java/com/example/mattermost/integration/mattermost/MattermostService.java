@@ -3,8 +3,10 @@ package com.example.mattermost.integration.mattermost;
 import com.example.mattermost.domain.model.ActionStatus;
 import com.example.mattermost.domain.model.ActiveTask;
 import com.example.mattermost.domain.model.ChannelMapping;
+import com.example.mattermost.domain.model.MessageHistory;
 import com.example.mattermost.domain.repository.ActiveTaskRepository;
 import com.example.mattermost.domain.repository.ChannelMappingRepository;
+import com.example.mattermost.domain.repository.MessageHistoryRepository;
 import com.example.mattermost.integration.mattermost.model.MattermostChannel;
 import com.example.mattermost.integration.mattermost.model.Post;
 import com.example.mattermost.integration.mattermost.model.SendPostRequest;
@@ -14,6 +16,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 
 import java.util.Collections;
@@ -34,6 +39,9 @@ public class MattermostService {
 
     @Autowired
     private ChannelMappingRepository channelMappingRepository;
+
+    @Autowired
+    private MessageHistoryRepository messageHistoryRepository;
 
     @Tool(description = "Get Users List")
     public List<User> getUsersList() {
@@ -58,6 +66,11 @@ public class MattermostService {
                 .build());
         try {
             extracted(channelId, userId, toolContext, post);
+            MessageHistory messageHistory = new MessageHistory();
+            messageHistory.setMessage("Assistant: " + System.lineSeparator() + message);
+            messageHistory.setChildWorkFlowId(toolContext.getContext().get("workflowId").toString());
+            messageHistory.setUserName("Assistant");
+            messageHistoryRepository.save(messageHistory);
         } catch (Exception e) {
             log.error("Error while sending personal message to channelId: {}, message: {}", channelId, message, e);
         }
@@ -103,6 +116,11 @@ public class MattermostService {
         log.info("Send Message to a Requestor, channelId: {}, rootId: {}, {}", channelId, rootId, message);
         try {
             extractedRequestor(channelId, toolContext);
+            MessageHistory messageHistory = new MessageHistory();
+            messageHistory.setMessage("Assistant: " + System.lineSeparator() + message);
+            messageHistory.setChildWorkFlowId(toolContext.getContext().get("workflowId").toString());
+            messageHistory.setUserName("Assistant");
+            messageHistoryRepository.save(messageHistory);
         } catch (Exception e) {
             log.error("Error while sending requestor", e);
         }
@@ -146,6 +164,10 @@ public class MattermostService {
         sendPersonalMessage(directChannel.getId(), userId, subject + System.lineSeparator() + timing + System.lineSeparator() + body, new ToolContext(Collections.emptyMap()));
         log.info("Meeting invite sent to channel: {}, user: {}", directChannel.getId(), userId);
         return "Invite Sent";
+    }
+
+    public User getUserById(String id) {
+        return mattermostApiClient.getUserById(id);
     }
 
 }

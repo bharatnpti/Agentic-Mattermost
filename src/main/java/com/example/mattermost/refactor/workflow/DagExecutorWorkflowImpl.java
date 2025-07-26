@@ -5,6 +5,7 @@ import com.example.mattermost.domain.model.ActionNode;
 import com.example.mattermost.domain.model.ActionStatus;
 import com.example.mattermost.domain.model.Goal;
 import com.example.mattermost.domain.model.Relationship;
+import com.example.mattermost.integration.mattermost.model.User;
 import com.example.mattermost.service.GoalExtractionActivity;
 import io.temporal.activity.ActivityOptions;
 import io.temporal.common.RetryOptions;
@@ -17,6 +18,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.util.*;
+import io.temporal.workflow.SignalMethod;
 
 @Slf4j
 @Service
@@ -29,8 +31,12 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
     private final Map<String, List<String>> childStatusMessages = new HashMap<>();
     private final Map<String, String> childWorkflowIds = new HashMap<>();
 
+    private Map<String, Set<String>> dependencyGraph;
+    private CurrentContext currentContext;
+
+
     @Override
-    public String executeGoal(String workflowId, String task, String channelId, String threadId, String userId) {
+    public String executeGoal(String workflowId, String task, String channelId, String threadId, User user) {
 
         // Create activity stub with proper timeout and retry options
         GoalExtractionActivity goalExtractionActivity = Workflow.newActivityStub(
@@ -55,14 +61,15 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
         context.setGoal(goal);
         context.setCurrentChannelId(channelId);
         context.setCurrentThreadId(threadId);
-        context.setCurrentUserId(userId);
+        context.setUser(user);
         log.info("Starting parent workflow for goal: {}", goal.getGoal());
 
         // Rest of the method remains the same...
-        Map<String, Set<String>> dependencies = buildDependencyGraph(goal.getRelationships());
-        logDependencyGraph(dependencies, goal.getNodes());
+        dependencyGraph = buildDependencyGraph(goal.getRelationships());
+        logDependencyGraph(dependencyGraph, goal.getNodes());
+        this.currentContext = context;
         initializeChildWorkflows(context);
-        executeDAG(context, dependencies);
+        executeDAG(context, dependencyGraph);
         waitForAllChildWorkflows();
 
         return "Goal completed: " + goal.getGoal();
@@ -120,31 +127,35 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
     }
 
     private void executeDAG(CurrentContext context, Map<String, Set<String>> dependencies) {
+
+        WorkflowQueryActivity workflowQueryActivity = Workflow.newActivityStub(
+                WorkflowQueryActivity.class,
+                ActivityOptions.newBuilder()
+                        .setStartToCloseTimeout(Duration.ofSeconds(30))
+                        .setScheduleToCloseTimeout(Duration.ofSeconds(60))
+                        .setRetryOptions(RetryOptions.newBuilder()
+                                .setInitialInterval(Duration.ofSeconds(1))
+                                .setMaximumInterval(Duration.ofSeconds(10))
+                                .setBackoffCoefficient(2.0)
+                                .setMaximumAttempts(3)
+                                .build())
+                        .build()
+        );
+
         Set<String> completed = new HashSet<>();
         Set<String> inProgress = new HashSet<>();
         Set<String> failed = new HashSet<>();
         Goal goal = context.getGoal();
         List<ActionNode> nodes = goal.getNodes();
-
-        // Collect all promises to wait for them properly
-        List<Promise<Void>> allPromises = new ArrayList<>();
-
-        int maxIterations = 100; // Prevent infinite loops
-        int iteration = 0;
-
-        while (completed.size() + failed.size() < nodes.size() && iteration < maxIterations) {
-            iteration++;
-
-            log.info("DAG execution loop iteration {}: completed={}, inProgress={}, failed={}, total={}",
-                    iteration, completed.size(), inProgress.size(), failed.size(), nodes.size());
-
             boolean progressMade = false;
 
             for (ActionNode node : nodes) {
                 String actionId = node.getActionId();
 
+                ActionStatus actionStatus = workflowQueryActivity.queryChildWorkflowActionStatus(node.getWorkflowId());
+
                 // Skip if already processed or in progress
-                if (completed.contains(actionId) || inProgress.contains(actionId) || failed.contains(actionId)) {
+                if (ActionStatus.COMPLETED == actionStatus || ActionStatus.FAILED == actionStatus || ActionStatus.PROCESSING == actionStatus) {
                     continue;
                 }
 
@@ -163,7 +174,6 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
                     log.warn("Action {} failed due to dependency failure", actionId);
                     progressMade = true;
                 } else if (allDepsCompleted) {
-                    // Start child workflow asynchronously
                     inProgress.add(actionId);
                     progressMade = true;
 
@@ -172,11 +182,10 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
                     // Create a copy of context for this specific action
                     CurrentContext nodeContext = new CurrentContext(
                             goal, node, context.getCurrentThreadId(),
-                            context.getCurrentChannelId(), context.getCurrentUserId()
+                            context.getCurrentChannelId(), context.getUser()
                     );
 
-                    Promise<Void> promise = startChildWorkflowAsync(nodeContext, completed, inProgress, failed);
-                    allPromises.add(promise);
+                    startChildWorkflowAsync(nodeContext, completed, inProgress, failed);
                 } else {
                     log.debug("Action {} waiting for dependencies: {} (completed: {})",
                             actionId, deps, completed);
@@ -184,49 +193,20 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
             }
 
             // If no progress was made and we're not done, we might have a circular dependency
-            if (!progressMade && completed.size() + failed.size() < nodes.size()) {
-                log.error("No progress made in iteration {}. Possible circular dependency or all remaining actions are blocked.", iteration);
-
-                // Log remaining actions and their dependencies
-                for (ActionNode node : nodes) {
-                    String actionId = node.getActionId();
-                    if (!completed.contains(actionId) && !inProgress.contains(actionId) && !failed.contains(actionId)) {
-                        Set<String> deps = dependencies.getOrDefault(actionId, Collections.emptySet());
-                        Set<String> unsatisfiedDeps = new HashSet<>(deps);
-                        unsatisfiedDeps.removeAll(completed);
-                        log.error("Blocked action {}: waiting for dependencies {}", actionId, unsatisfiedDeps);
-                    }
-                }
-
-                // Mark remaining actions as failed to prevent infinite loop
-                for (ActionNode node : nodes) {
-                    String actionId = node.getActionId();
-                    if (!completed.contains(actionId) && !inProgress.contains(actionId) && !failed.contains(actionId)) {
-                        failed.add(actionId);
-                        childStatuses.put(actionId, ActionStatus.FAILED);
-                        childStatusMessages.put(actionId, Arrays.asList("Failed due to circular dependency or blocked dependencies"));
-                    }
-                }
-                break;
-            }
-
-            // Small delay to prevent busy waiting, but only if we haven't completed everything
-            if (completed.size() + failed.size() < nodes.size()) {
-                Workflow.sleep(Duration.ofMillis(500)); // Increased delay slightly
-            }
-        }
-
-        if (iteration >= maxIterations) {
-            log.error("Maximum iterations ({}) reached, stopping DAG execution", maxIterations);
-        }
-
-        // Wait for all promises to complete
-        if (!allPromises.isEmpty()) {
-            Promise.allOf(allPromises).get();
-        }
-
-        log.info("DAG execution completed. Final status: completed={}, failed={}, total={}",
-                completed.size(), failed.size(), nodes.size());
+//            if (!progressMade && completed.size() + failed.size() < nodes.size()) {
+//                log.error("No progress made in iteration Possible circular dependency or all remaining actions are blocked.");
+//
+//                // Log remaining actions and their dependencies
+//                for (ActionNode node : nodes) {
+//                    String actionId = node.getActionId();
+//                    if (!completed.contains(actionId) && !inProgress.contains(actionId) && !failed.contains(actionId)) {
+//                        Set<String> deps = dependencies.getOrDefault(actionId, Collections.emptySet());
+//                        Set<String> unsatisfiedDeps = new HashSet<>(deps);
+//                        unsatisfiedDeps.removeAll(completed);
+//                        log.error("Blocked action {}: waiting for dependencies {}", actionId, unsatisfiedDeps);
+//                    }
+//                }
+//            }
     }
 
     private Promise<Void> startChildWorkflowAsync(CurrentContext context, Set<String> completed,
@@ -236,50 +216,16 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
 
         ChildWorkflowInterface childWorkflow = childWorkflows.get(actionId);
 
-        Promise<String> resultPromise = Async.function(() -> {
+        Promise<Void> resultPromise = Async.procedure(() -> {
             try {
-                return childWorkflow.executeAction(context);
+                childWorkflow.executeAction(context);
             } catch (Exception e) {
-                log.error("Child workflow {} execution failed: {}", actionId, e.getMessage());
+                log.error("startChildWorkflowAsync-1: Child workflow {} execution failed: {}", actionId, e.getMessage());
                 throw e;
             }
         });
 
-        return resultPromise.handle((result, failure) -> {
-            // Remove from in-progress first
-            inProgress.remove(actionId);
-
-            if (failure == null) {
-                completed.add(actionId);
-                childStatuses.put(actionId, ActionStatus.COMPLETED);
-                log.info("Child workflow {} completed successfully", actionId);
-
-                try {
-                    List<String> childStatus = childWorkflow.getStatus();
-                    childStatusMessages.put(actionId, childStatus);
-                } catch (Exception e) {
-                    // If we can't get status, use a default message
-                    childStatusMessages.put(actionId, Arrays.asList("Completed successfully"));
-                    log.warn("Could not retrieve status for completed action {}: {}", actionId, e.getMessage());
-                }
-            } else {
-                failed.add(actionId);
-                childStatuses.put(actionId, ActionStatus.FAILED);
-                log.error("Child workflow {} failed: {}", actionId, failure.getMessage());
-
-                try {
-                    List<String> childStatus = childWorkflow.getStatus();
-                    List<String> updatedStatus = new ArrayList<>(childStatus);
-                    updatedStatus.add("Failed: " + failure.getMessage());
-                    childStatusMessages.put(actionId, updatedStatus);
-                } catch (Exception e) {
-                    // If we can't get status, create a failure message
-                    childStatusMessages.put(actionId, Arrays.asList("Failed: " + failure.getMessage()));
-                }
-            }
-
-            return null;
-        });
+        return resultPromise;
     }
 
     private void waitForAllChildWorkflows() {
@@ -302,7 +248,7 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
                         completed, failed, pending);
             }
 
-            childStatuses.forEach((key, value) -> log.info("Child workflow {} status: {}", key, value));
+            childStatuses.forEach((key, value) -> log.info("waitForAllChildWorkflows: Child workflow {} status: {}", key, value));
 
             return allDone;
         });
@@ -319,7 +265,6 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
             ChildWorkflowInterface childWorkflow = entry.getValue();
 
             try {
-                // Query the child workflow directly with timeout
                 ActionStatus status = childWorkflow.getActionStatus();
                 currentStatuses.put(actionId, status);
                 // Update cache with fresh data
@@ -351,7 +296,6 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
             ChildWorkflowInterface childWorkflow = entry.getValue();
 
             try {
-                // Query the child workflow directly
                 List<String> status = childWorkflow.getStatus();
                 result.put(actionId, new ArrayList<>(status));
                 // Update cache with fresh data
@@ -386,5 +330,32 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
 
         return String.format("Overall Status: %d/%d completed, %d failed, %d processing, %d pending",
                 completed, total, failed, processing, pending);
+    }
+
+    @SignalMethod
+    public void onChildCompleted(String actionId, ActionStatus actionStatus, String message) {
+        log.info("Received signal: child {} completed, message={}", actionId, message);
+
+        // Update status
+        childStatuses.put(actionId, actionStatus);
+        childStatusMessages.put(actionId, Arrays.asList(message));
+
+        // Resume DAG execution to check for next executable actions
+        if (currentContext != null && dependencyGraph != null) {
+            log.info("Resuming DAG after child completion: {}", actionId);
+            executeDAG(currentContext, dependencyGraph);
+        } else {
+            log.warn("Cannot resume DAG - context or dependency graph is null");
+        }
+    }
+
+
+    @SignalMethod
+    public void onUserResponse(String actionId, String userInput, String threadId, String channelId) {
+        log.info("Received user response signal for action {}: {}", actionId, userInput);
+        ChildWorkflowInterface childWorkflow = childWorkflows.get(actionId);
+        if (childWorkflow != null) {
+            childWorkflow.onUserResponse(userInput);
+        }
     }
 }

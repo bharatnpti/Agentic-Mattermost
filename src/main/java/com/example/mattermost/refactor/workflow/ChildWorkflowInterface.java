@@ -1,9 +1,7 @@
 package com.example.mattermost.refactor.workflow;
 
 import com.example.mattermost.domain.CurrentContext;
-import com.example.mattermost.domain.model.ActionNode;
 import com.example.mattermost.domain.model.ActionStatus;
-import com.example.mattermost.domain.model.Goal;
 import io.temporal.workflow.QueryMethod;
 import io.temporal.workflow.SignalMethod;
 import io.temporal.workflow.WorkflowInterface;
@@ -20,7 +18,7 @@ public interface ChildWorkflowInterface {
     void updateStatus(String status);
 
     @SignalMethod
-    void setActionResponse(String response);
+    void onUserResponse(String response);
 
     @SignalMethod
     void completeAction();

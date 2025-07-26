@@ -2,6 +2,7 @@ package com.example.mattermost.domain;
 
 import com.example.mattermost.domain.model.ActionNode;
 import com.example.mattermost.domain.model.Goal;
+import com.example.mattermost.integration.mattermost.model.User;
 
 public class CurrentContext {
 
@@ -12,17 +13,17 @@ public class CurrentContext {
 
     private String currentChannelId;
 
-    private String currentUserId;
+    private User user;
 
     public CurrentContext() {
     }
 
-    public CurrentContext(Goal goal, ActionNode action, String currentThreadId, String currentChannelId, String currentUserId) {
+    public CurrentContext(Goal goal, ActionNode action, String currentThreadId, String currentChannelId, User user) {
         this.goal = goal;
         this.currentActionNode = action;
         this.currentThreadId = currentThreadId;
         this.currentChannelId = currentChannelId;
-        this.currentUserId = currentUserId;
+        this.user = user;
     }
 
     public ActionNode getCurrentActionNode() {
@@ -49,12 +50,12 @@ public class CurrentContext {
         this.currentChannelId = currentChannelId;
     }
 
-    public String getCurrentUserId() {
-        return currentUserId;
+    public User getUser() {
+        return user;
     }
 
-    public void setCurrentUserId(String currentUserId) {
-        this.currentUserId = currentUserId;
+    public void setUser(User user) {
+        this.user = user;
     }
 
     public Goal getGoal() {
@@ -72,7 +73,7 @@ public class CurrentContext {
                 ", currentActionNode=" + currentActionNode +
                 ", currentThreadId='" + currentThreadId + '\'' +
                 ", currentChannelId='" + currentChannelId + '\'' +
-                ", currentUserId='" + currentUserId + '\'' +
+                ", currentUserId='" + user.getId() + "-" + user.getUsername() + '\'' +
                 '}';
     }
 }

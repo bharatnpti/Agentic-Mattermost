@@ -15,6 +15,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Slf4j
 public class ChildWorkflowImpl implements ChildWorkflowInterface {
@@ -44,6 +45,8 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
 
     private final LLMActivity llmActivity = Workflow.newActivityStub(LLMActivity.class, defaultActivityOptions);
 
+    private final MessageHistoryActivity messageHistoryActivity = Workflow.newActivityStub(MessageHistoryActivity.class, defaultActivityOptions);
+
     @Override
     public String executeAction(CurrentContext context) {
         log.info("=== CHILD WORKFLOW STARTING ===");
@@ -64,101 +67,45 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
             updateStatus("Action Description: " + actionNode.getActionDescription());
 
             // Set action status to PROCESSING
-            log.info("Setting action status to PROCESSING");
+            log.info("Setting action status to PROCESSING" + actionNode.getActionId());
             currentActionStatus = ActionStatus.PROCESSING;
             actionNode.setActionStatus(ActionStatus.PROCESSING);
             updateStatus("Status: PROCESSING");
 
-            int maxIterations = 10; // Prevent infinite loops
-            int iteration = 0;
-
-            log.info("Starting main processing loop");
-
-            // Main processing loop with safety bounds
-//            while (currentActionStatus != ActionStatus.COMPLETED &&
-//                    currentActionStatus != ActionStatus.FAILED &&
-//                    iteration < maxIterations) {
-
-                iteration++;
-                log.info("=== Processing iteration: {} ===", iteration);
-                updateStatus("Processing iteration: " + iteration);
-
-                try {
-                    log.info("About to call determineActionType activity");
+                    log.info("About to call determineActionType activity" + actionNode.getActionId());
                     log.info("Context for activity: {}", context);
 
                     // Step 1: Determine action type
                     log.info("Calling llmActivity.determineActionType...");
-                    ActionStatus actionType = llmActivity.determineActionType(context);
-                    log.info("Activity returned action type: {}", actionType);
-
-                    updateStatus("Determined action type: " + actionType);
-
-                    log.info("About to execute action by status: {}", actionType);
-                    executeActionByStatus(actionType, context);
-                    log.info("Completed executeActionByStatus");
-
-                    // Add a small delay to prevent tight loops
-//                    if (currentActionStatus == ActionStatus.PROCESSING) {
-//                        updateStatus("Still processing, waiting before next iteration...");
-//                        log.info("Still processing, sleeping for 1 second");
-//                        Workflow.sleep(Duration.ofSeconds(1));
-//                    }
-
+            ActionStatus actionType = evaluateAndExecuteAction(context);
+            if(actionType == ActionStatus.COMPLETED || actionType == ActionStatus.AUTOMATED) {
+                        return context.getCurrentActionNode().getConvHistory();
+                    } else {
+                        return context.getCurrentActionNode().getConvHistory();
+                    }
                 } catch (Exception e) {
-                    log.error("Error in action processing iteration {}: {}", iteration, e.getMessage(), e);
+            log.error("Exception occurred during action execution", e);
                     updateStatus("Error in action processing: " + e.getMessage());
                     currentActionStatus = ActionStatus.FAILED;
                     actionNode.setActionStatus(ActionStatus.FAILED);
                     this.failureReason = e.getMessage();
                     this.isFailed = true;
-//                    break;
+                    throw e;
                 }
-//            }
+    }
 
-            // Check if we hit max iterations
-//            if (iteration >= maxIterations && currentActionStatus != ActionStatus.COMPLETED) {
-//                log.warn("Maximum iterations ({}) reached, marking as failed", maxIterations);
-//                updateStatus("Maximum iterations reached, marking as failed");
-//                currentActionStatus = ActionStatus.FAILED;
-//                actionNode.setActionStatus(ActionStatus.FAILED);
-//                this.failureReason = "Maximum processing iterations exceeded";
-//                this.isFailed = true;
-//            }
+    private ActionStatus evaluateAndExecuteAction(CurrentContext context) {
 
-            if (currentActionStatus == ActionStatus.FAILED) {
-                log.error("Action failed with reason: {}", failureReason);
-                updateStatus("Action failed: " + failureReason);
-                throw new RuntimeException("Action failed: " + failureReason);
-            }
+        List<MessageHistory> messageHistory = messageHistoryActivity.getMessageHistory(actionNode.getWorkflowId());
 
-            // Mark as completed
-            log.info("Action processing completed successfully");
-            currentActionStatus = ActionStatus.COMPLETED;
-            actionNode.setActionStatus(ActionStatus.COMPLETED);
-            this.isCompleted = true;
+        actionNode.setActionResponses(messageHistory.stream().map(MessageHistory::getMessage).collect(Collectors.toList()));
 
-            updateStatus("Action completed successfully");
-            if (actionResponse == null) {
-                actionResponse = "Action completed successfully for: " + actionNode.getActionId();
-            }
-            actionNode.setActionResponse(actionResponse);
+        ActionStatus actionType = llmActivity.determineActionType(context);
+        log.info("Activity returned action type: {}, action id: {}", actionType,  actionNode.getActionId());
 
-            log.info("Child workflow returning response: {}", actionResponse);
-            return actionResponse;
-
-        } catch (Exception e) {
-            log.error("=== CHILD WORKFLOW EXECUTION FAILED ===", e);
-            // Ensure we properly set failure state
-            currentActionStatus = ActionStatus.FAILED;
-            if (actionNode != null) {
-                actionNode.setActionStatus(ActionStatus.FAILED);
-            }
-            this.isFailed = true;
-            this.failureReason = e.getMessage();
-            updateStatus("Workflow execution failed: " + e.getMessage());
-            throw e;
-        }
+        updateStatus("Determined action type: " + actionType);
+        executeActionByStatus(actionType, context);
+        return actionType;
     }
 
     private void handleWaitingForInput(CurrentContext context) {
@@ -166,22 +113,26 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
         updateStatus("Handling WAITING_FOR_INPUT action");
 
         try {
-            log.info("About to call formulate_user_message activity");
+            log.info("About to call formulate_user_message activity" + context.getCurrentActionNode().getActionId());
             // Step 1: Formulate user message
             MessageList messageList = llmActivity.formulate_user_message(context);
             log.info("Got message list with {} messages", messageList.getMessages().size());
 
             messageList.getMessages().forEach((message) -> {
-                log.info("Sending message to: {}", message.getRecipient());
-                updateStatus("Sending message to: " + message.getRecipient());
-                Async.procedure(llmActivity::checkAndAskUser, message, context);
+                log.info("Sending message to: {}", message.getUser().getUsername());
+                updateStatus("Sending message to: " + message.getUser().getUsername());
+                llmActivity.checkAndAskUser(message, context);
             });
 
             // Set action status to WAITING_FOR_INPUT
             currentActionStatus = ActionStatus.WAITING_FOR_INPUT;
             actionNode.setActionStatus(ActionStatus.WAITING_FOR_INPUT);
             updateStatus("Status updated to WAITING_FOR_INPUT");
-            log.info("Action status set to WAITING_FOR_INPUT");
+            log.info("Action status set to WAITING_FOR_INPUT: " + context.getCurrentActionNode().getActionId());
+
+            String userResponse = proceedSignal.get();
+            log.info("User sent response to signal from handleWaitingForInput: " + userResponse);
+            evaluateAndExecuteAction(context);
 
         } catch (Exception e) {
             log.error("Error in handleWaitingForInput: {}", e.getMessage(), e);
@@ -195,12 +146,12 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
         updateStatus("Handling AUTOMATED action");
 
         try {
-            log.info("Starting async LLM completion");
+            log.info("Starting async LLM completion" + context.getCurrentActionNode().getActionId());
             Promise<LLMProcessingResult> llmCompletionPromise = Async.function(this::tryLLMCompletionViaActivity, context);
             log.info("Waiting for LLM completion result");
             LLMProcessingResult llmProcessingResult = llmCompletionPromise.get();
 
-            log.info("LLM processing completed with status: {}", llmProcessingResult.getActionStatus());
+            log.info("LLM processing completed with status: {}, actionID: {}", llmProcessingResult.getActionStatus(), context.getCurrentActionNode().getActionId());
             updateStatus("LLM processing completed with status: " + llmProcessingResult.getActionStatus());
             actionNode.setActionResponse("Action processing latest response: " + llmProcessingResult.getActionResult());
 
@@ -240,29 +191,29 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
                 break;
 
             case COMPLETED:
-                log.info("Action type is COMPLETED, marking as completed");
+                log.info("Action type is COMPLETED, marking as completed" + context.getCurrentActionNode().getActionId());
                 currentActionStatus = ActionStatus.COMPLETED;
                 actionNode.setActionStatus(ActionStatus.COMPLETED);
                 this.isCompleted = true;
                 updateStatus("Action marked as COMPLETED");
+                signalParent(context, currentActionStatus, "");
                 break;
 
             case FAILED:
-                log.info("Action type is FAILED, marking as failed");
+                log.info("Action type is FAILED, marking as failed" + context.getCurrentActionNode().getActionId());
                 currentActionStatus = ActionStatus.FAILED;
                 actionNode.setActionStatus(ActionStatus.FAILED);
                 this.isFailed = true;
                 updateStatus("Action marked as FAILED");
-                break;
-
+                throw new RuntimeException("Action type is FAILED");
             default:
-                log.error("Unknown action type: {}", actionType);
+                log.error("Unknown action type: {}, actionId: {}", actionType, context.getCurrentActionNode().getActionId());
                 updateStatus("Unknown action type: " + actionType);
                 currentActionStatus = ActionStatus.FAILED;
                 actionNode.setActionStatus(ActionStatus.FAILED);
                 this.isFailed = true;
                 this.failureReason = "Unknown action type: " + actionType;
-                break;
+                throw new RuntimeException("Action type is FAILED");
         }
     }
 
@@ -275,11 +226,16 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
     }
 
     @Override
-    public void setActionResponse(String response) {
+    public void onUserResponse(String response) {
         this.actionResponse = response;
         updateStatus("Response received: " + response);
         log.info("Action response set: {}", response);
+
+        if (!proceedSignal.isCompleted()) {
+            proceedSignal.complete(response);
+        }
     }
+
 
     @Override
     public void completeAction() {
@@ -321,5 +277,13 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
     public String getActionResponse() {
         log.debug("getActionResponse returning: {}", actionResponse);
         return actionResponse;
+    }
+
+    private void signalParent(CurrentContext context, ActionStatus status, String message) {
+        String parentWorkflowId = context.getGoal().getWorkflowId();
+        if (parentWorkflowId != null && actionNode != null) {
+            DagExecutorWorkflow parent = Workflow.newExternalWorkflowStub(DagExecutorWorkflow.class, parentWorkflowId);
+            parent.onChildCompleted(actionNode.getActionId(), ActionStatus.COMPLETED, message);
+        }
     }
 }

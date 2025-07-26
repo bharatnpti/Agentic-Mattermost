@@ -3,10 +3,9 @@ package com.example.mattermost.controller;
 import com.example.mattermost.MeetingSchedulerAppMain;
 import com.example.mattermost.domain.model.*;
 import com.example.mattermost.domain.repository.ActiveTaskRepository;
-import com.example.mattermost.refactor.workflow.ChildWorkflowImpl;
-import com.example.mattermost.refactor.workflow.DagExecutorWorkflow;
-import com.example.mattermost.refactor.workflow.DagExecutorWorkflowImpl;
-import com.example.mattermost.refactor.workflow.WorkflowQueryActivityImpl;
+import com.example.mattermost.integration.mattermost.MattermostService;
+import com.example.mattermost.integration.mattermost.model.User;
+import com.example.mattermost.refactor.workflow.*;
 import com.example.mattermost.service.GoalExtractionActivity;
 import com.example.mattermost.workflow.MeetingSchedulerWorkflow;
 import com.example.mattermost.workflow.activity.LLMActivity;
@@ -37,10 +36,16 @@ public class WorkflowController {
     private final ActiveTaskRepository activeTaskRepository;
     private final GoalExtractionActivity goalExtractionActivity;
 
+    private final WorkflowQueryActivity workflowQueryActivity;
+
+    private final MattermostService mattermostService;
+
     // Using constant from MeetingSchedulerAppMain, consider moving to application properties or TemporalConfig
     private static final String TASK_QUEUE = MeetingSchedulerAppMain.TASK_QUEUE;
 
     private LLMActivity llmActivity;
+
+    private MessageHistoryActivityImpl messageHistoryActivityImpl;
 
     private static final String TASK_QUEUE_PARENT = "parent-workflow-queue";
     private static final String TASK_QUEUE_CHILD = "child-workflow-queue";
@@ -49,11 +54,17 @@ public class WorkflowController {
     public WorkflowController(WorkflowClient workflowClient,
                               ActiveTaskRepository activeTaskRepository,
                               GoalExtractionActivity goalExtractionActivity,
-                              LLMActivity llmActivity) {
+                              LLMActivity llmActivity,
+                              MattermostService mattermostService,
+                              MessageHistoryActivityImpl messageHistoryActivityImpl,
+                              WorkflowQueryActivity workflowQueryActivity) {
         this.workflowClient = workflowClient;
         this.activeTaskRepository = activeTaskRepository;
         this.goalExtractionActivity = goalExtractionActivity;
         this.llmActivity = llmActivity;
+        this.mattermostService = mattermostService;
+        this.messageHistoryActivityImpl = messageHistoryActivityImpl;
+        this.workflowQueryActivity = workflowQueryActivity;
     }
 
     @PostMapping("/start")
@@ -208,6 +219,8 @@ public class WorkflowController {
         String userId = messagePayload.getUserId();
         String threadRootId = messagePayload.getThreadId();
 
+        User user = mattermostService.getUserById(userId);
+
         logger.info("Received message from channelId: {}, userId: {}, threadId: {} with content: '{}'",
                 channelId, userId, threadRootId, message);
 
@@ -220,7 +233,20 @@ public class WorkflowController {
                         .findFirst()
                         .orElseThrow();
                 String workflowId = activeTask.getWorkflowId();
-                String currentActionId = activeTask.getCurrentActionId();
+
+                ChildWorkflowInterface workflow = workflowClient.newWorkflowStub(ChildWorkflowInterface.class, workflowId);
+
+                MessageHistory messageHistory = new MessageHistory();
+                messageHistory.setMessage(user.getUsername() + ": " + System.lineSeparator() + message);
+                messageHistory.setChildWorkFlowId(workflowId);
+                messageHistory.setUserId(userId);
+                messageHistory.setUserName(user.getUsername());
+
+                messageHistoryActivityImpl.save(messageHistory);
+
+                // Signal the workflow
+                workflow.onUserResponse(message);
+
 
                 // TODO
                 return ResponseEntity.accepted().body(Map.of("workflowId", workflowId));
@@ -237,13 +263,13 @@ public class WorkflowController {
                 Worker parentWorker = factory.newWorker(TASK_QUEUE_PARENT);
                 parentWorker.registerWorkflowImplementationTypes(DagExecutorWorkflowImpl.class);
                 parentWorker.registerActivitiesImplementations(
-                        new WorkflowQueryActivityImpl(client),
-                        goalExtractionActivity  // Add this to parent worker!
+                        goalExtractionActivity,
+                        workflowQueryActivity
                 );
 
                 Worker childWorker = factory.newWorker(TASK_QUEUE_CHILD);
                 childWorker.registerWorkflowImplementationTypes(ChildWorkflowImpl.class);
-                childWorker.registerActivitiesImplementations(llmActivity);  // Only llmActivity for child
+                childWorker.registerActivitiesImplementations(llmActivity, messageHistoryActivityImpl);  // Only llmActivity for child
 
                 factory.start();
                 logger.info("✅ All workers started successfully");
@@ -258,7 +284,7 @@ public class WorkflowController {
                 DagExecutorWorkflow workflow = client.newWorkflowStub(DagExecutorWorkflow.class, parentOptions);
 
                 logger.info("Starting workflow execution...");
-                WorkflowClient.start(workflow::executeGoal, workflowId, message, channelId, threadRootId, userId);
+                WorkflowClient.start(workflow::executeGoal, workflowId, message, channelId, threadRootId, user);
 
                 return ResponseEntity.accepted().body(Map.of("workflowId", workflowId));
             }

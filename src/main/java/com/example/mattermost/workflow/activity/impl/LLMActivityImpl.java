@@ -3,7 +3,6 @@ package com.example.mattermost.workflow.activity.impl;
 import com.example.mattermost.domain.CurrentContext;
 import com.example.mattermost.domain.MessageList;
 import com.example.mattermost.domain.MessageRequest;
-import com.example.mattermost.domain.Recipient;
 import com.example.mattermost.domain.model.*;
 import com.example.mattermost.integration.llm.NlpService;
 import com.example.mattermost.integration.mattermost.MattermostService;
@@ -15,6 +14,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
+import java.util.Objects;
 
 
 @Component
@@ -106,47 +106,47 @@ public class LLMActivityImpl implements LLMActivity {
         return askUser;
     }
 
-    public String checkAndAskUser(MessageRequest messageRequest, String convHistory, CurrentContext currentContext) {
-        String checkAndAskUser = nlpService.checkAndAskUser(messageRequest, currentContext.getCurrentActionNode(), convHistory, currentContext.getCurrentThreadId(), currentContext.getCurrentChannelId(), currentContext.getCurrentUserId());
-        if("QUESTION".equalsIgnoreCase(checkAndAskUser) && messageRequest.getRecipient() == Recipient.REQUESTOR) {
-            ActionNode actionNode = currentContext.getCurrentActionNode();
-            Map<String, Object> toolContext = Map.of(
-                    "workflowId", actionNode.getWorkflowId(),
-                    "actionId", actionNode.getActionId(),
-                    "rootId", currentContext.getCurrentThreadId(),
-                    "channelId", currentContext.getCurrentChannelId(),
-                    "currentUserId", currentContext.getCurrentUserId()
-            );
-            ToolContext toolContext1 = new ToolContext(toolContext);
-
-            mattermostService.askRequestor( messageRequest.getMessage(),
-                    toolContext1
-                    );
-        } else if("QUESTION".equalsIgnoreCase(checkAndAskUser)) {
-            nlpService.askUser( messageRequest,
-                    currentContext.getCurrentActionNode(),
-                    currentContext.getCurrentThreadId(),
-                    currentContext.getCurrentChannelId(),
-                    currentContext.getCurrentUserId());
-        }
-        return "";
-    }
+//    public String checkAndAskUser(MessageRequest messageRequest, String convHistory, CurrentContext currentContext) {
+//        String checkAndAskUser = nlpService.checkAndAskUser(messageRequest, currentContext.getCurrentActionNode(), convHistory, currentContext.getCurrentThreadId(), currentContext.getCurrentChannelId(), currentContext.getCurrentUserId());
+//        if("QUESTION".equalsIgnoreCase(checkAndAskUser) && messageRequest.getRecipient() == Recipient.REQUESTOR) {
+//            ActionNode actionNode = currentContext.getCurrentActionNode();
+//            Map<String, Object> toolContext = Map.of(
+//                    "workflowId", actionNode.getWorkflowId(),
+//                    "actionId", actionNode.getActionId(),
+//                    "rootId", currentContext.getCurrentThreadId(),
+//                    "channelId", currentContext.getCurrentChannelId(),
+//                    "currentUserId", currentContext.getUser().getId(),
+//                    "currentUser", currentContext.getUser().getFirst_name()
+//            );
+//            ToolContext toolContext1 = new ToolContext(toolContext);
+//
+//            mattermostService.askRequestor( messageRequest.getMessage(),
+//                    toolContext1
+//                    );
+//        } else if("QUESTION".equalsIgnoreCase(checkAndAskUser)) {
+//            nlpService.askUser( messageRequest,
+//                    currentContext.getCurrentActionNode(),
+//                    currentContext.getCurrentThreadId(),
+//                    currentContext.getCurrentChannelId(),
+//                    currentContext.getUser().getId());
+//        }
+//        return "";
+//    }
 
     @Override
     public String checkAndAskUser(MessageRequest messageRequest, CurrentContext currentContext) {
         String checkAndAskUser = nlpService.checkAndAskUser(messageRequest, currentContext);
         ActionNode actionNode = currentContext.getCurrentActionNode();
-        actionNode.setActionResponse("BOT: to " + messageRequest.getRecipient() + ": " + messageRequest.getMessage());
-        if("QUESTION".equalsIgnoreCase(checkAndAskUser) && messageRequest.getRecipient() == Recipient.REQUESTOR) {
+        if("QUESTION".equalsIgnoreCase(checkAndAskUser) && Objects.equals(messageRequest.getUser().getId(), currentContext.getUser().getId())) {
+            actionNode.setActionResponse("BOT: to " + messageRequest.getUser().getUsername() + ": " + messageRequest.getMessage());
             Map<String, Object> toolContext = Map.of(
                     "workflowId", actionNode.getWorkflowId(),
                     "actionId", actionNode.getActionId(),
                     "rootId", currentContext.getCurrentThreadId(),
                     "channelId", currentContext.getCurrentChannelId(),
-                    "currentUserId", currentContext.getCurrentUserId()
+                    "currentUserId", currentContext.getUser().getId()
             );
             ToolContext toolContext1 = new ToolContext(toolContext);
-
             mattermostService.askRequestor( messageRequest.getMessage(),
                     toolContext1
             );
@@ -155,7 +155,7 @@ public class LLMActivityImpl implements LLMActivity {
                     currentContext.getCurrentActionNode(),
                     currentContext.getCurrentThreadId(),
                     currentContext.getCurrentChannelId(),
-                    currentContext.getCurrentUserId());
+                    currentContext.getUser().getId());
         }
         return "";
     }
