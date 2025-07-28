@@ -34,15 +34,14 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
     private final CompletablePromise<String> proceedSignal = Workflow.newPromise();
 
     RetryOptions retryOptions = RetryOptions.newBuilder()
-            .setInitialInterval(Duration.ofSeconds(1))
-            .setMaximumInterval(Duration.ofSeconds(30))
+            .setInitialInterval(Duration.ofSeconds(10))
+            .setMaximumInterval(Duration.ofSeconds(60))
             .setBackoffCoefficient(2)
             .setMaximumAttempts(3)
             .build();
 
     ActivityOptions defaultActivityOptions = ActivityOptions.newBuilder()
-            .setStartToCloseTimeout(Duration.ofMinutes(3))
-            .setScheduleToCloseTimeout(Duration.ofMinutes(5))
+            .setStartToCloseTimeout(Duration.ofMinutes(120))
             .setRetryOptions(retryOptions)
             .build();
 

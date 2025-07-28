@@ -97,8 +97,15 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
             ChildWorkflowOptions childOptions = ChildWorkflowOptions.newBuilder()
                     .setWorkflowId(childWorkflowId)
                     .setTaskQueue(TASK_QUEUE_CHILD)
-                    .setWorkflowExecutionTimeout(Duration.ofMinutes(10))
-                    .setWorkflowRunTimeout(Duration.ofMinutes(5))
+                    .setWorkflowExecutionTimeout(Duration.ofMinutes(120))
+                    .setWorkflowTaskTimeout(Duration.ofMinutes(20))
+                    .setWorkflowRunTimeout(Duration.ofMinutes(60))
+                    .setRetryOptions(RetryOptions.newBuilder()
+                            .setMaximumAttempts(3)
+                            .setInitialInterval(Duration.ofMinutes(10))
+                            .setMaximumInterval(Duration.ofMinutes(100))
+                            .setBackoffCoefficient(2.0)
+                            .build())
                     .build();
 
             ChildWorkflowInterface childWorkflow = Workflow.newChildWorkflowStub(

@@ -287,8 +287,8 @@ public class WorkflowController {
                 WorkflowOptions parentOptions = WorkflowOptions.newBuilder()
                         .setWorkflowId(workflowId)
                         .setTaskQueue(TASK_QUEUE_PARENT)
-                        .setWorkflowExecutionTimeout(Duration.ofMinutes(30))
-                        .setWorkflowRunTimeout(Duration.ofMinutes(15))
+                        .setWorkflowExecutionTimeout(Duration.ofMinutes(720))
+                        .setWorkflowRunTimeout(Duration.ofMinutes(120))
                         .build();
 
                 DagExecutorWorkflow workflow = client.newWorkflowStub(DagExecutorWorkflow.class, parentOptions);
