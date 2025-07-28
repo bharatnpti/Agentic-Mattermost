@@ -43,4 +43,8 @@ public interface LLMActivity {
 
     @ActivityMethod
     LLMProcessingResult processActionWithLLM(CurrentContext context);
+
+
+    @ActivityMethod
+    String summarize(CurrentContext context);
 }

@@ -87,16 +87,16 @@ Prioritize creating a lean, efficient DAG by removing transitive dependencies. I
                     Execution History:
                     {result}
                     
+                      ### :
+                      {previousActions}
+                    
                     Instructions:
                     Based on the description and execution result, determine the most accurate action status from the following enum values:
                     
                     Rules:
-                    - If the action has not started and required inputs are not available yet → return PENDING
-                    - If the action is asking for user/system input and awaiting a response → return WAITING_FOR_INPUT
-                    - If input has been received and action is actively being executed → return PROCESSING
+                    - If the action needs a user input → return WAITING_FOR_INPUT
+                    - If it can be executed without human interaction and no input is required to complete this action -> return AUTOMATED
                     - If the action was executed successfully with all required fields present → return COMPLETED
-                    - If execution failed or required input was invalid → return FAILED
-                    - If the action's dependencies failed or were skipped → return SKIPPED
                     
                     Return **only** the appropriate ActionStatus enum value based on the above.
                     
@@ -142,7 +142,7 @@ Prioritize creating a lean, efficient DAG by removing transitive dependencies. I
             Given the action below, classify whether it is:
             
             1. WAITING_FOR_INPUT – If it involves collecting input from a user or prompting a user
-            2. AUTOMATED – If it can be executed without human interaction.
+            2. AUTOMATED – If it can be executed without human interaction and no input is required to complete this action
             3. COMPLETED - If the required action is completed.
             
             ## Goal and current Action details:
@@ -193,31 +193,64 @@ Prioritize creating a lean, efficient DAG by removing transitive dependencies. I
             
             """;
     public static final String ASK_USER = """
-        You are an assistant orchestrating steps to achieve the goal:
-        **"{goal}"**
-        
-        Current Action:
-        **{actionName}**
-        Description: {actionDescription}
-        
-        the latest messgae in conv history is sent by -
-        userId: {userId}
-        userName: {userName}
-        
-        Your task is to formulate the message to ask for the required information with the user(s) and collect the following data required to complete this step.
-        If a prompt template is provided, use it as the base and improve it if needed:
-        Prompt Template: "{prompt_template}"
-        {required_fields}
-        
-        ###Conv history
-        {convHistory}
-        
-        Instructions:
-        - Generate a clear, friendly, and complete message to ask the user(s) for the required information.
-        - Rephrase or enhance the prompt template if needed.
-        - Keep the tone concise and helpful.
-        - For each message you generate, specify the recipient user name(mandatory) and user id(if present).
-      
+            You are an intelligent assistant orchestrating a sequence of actions to achieve the overall goal:
+            **"{goal}"**
+            
+            ---
+            
+            ### Current Action
+            **Name:** {actionName}
+            **Description:** {actionDescription}
+            
+            ---
+            
+            ### Latest message in conversation history was sent by:
+            - **User ID:** {userId}
+            - **User Name:** {userName}
+            
+            ---
+            
+            ### :
+            {previousActions}
+            
+            ---
+            
+            ### Your Objective
+            Formulate a clear, user-friendly message to gather the necessary information to complete this step.
+            
+            If a **prompt template** is available, use it as a base and refine it as needed:
+            **Prompt Template:** "{prompt_template}"
+            
+            **Data to be collected:**
+            {required_fields}
+            
+            ---
+            
+            ### Conversation History
+            {convHistory}
+            
+            ---
+            
+            ### Instructions
+            - Craft a message that politely and clearly requests the required information from the user(s).
+            - You may improve or rephrase the provided prompt template to make it more effective.
+            - Maintain a concise, helpful, and respectful tone.
+            - For each message you create, include:
+              - **User Name** (mandatory)
+              - **User ID** (only if available)
+            
+            ---
+            
+            ### Note
+            Do **not** guess or assume the user ID. If it is not provided, it will be resolved in subsequent steps.
+            
+            ---
+            
+            ### Output Format
+            Return the result as a **JSON object** containing a list of messages, each with its intended recipient.
+            Use the following structure:
+            {formatInstructions}
+            
         
         **Format the output as a JSON object.**
         Return a list of message alongwith it's recipient
@@ -240,6 +273,9 @@ Now, execute the following action:
 
 Relevant context from previous completed actions:
 {convHistory}
+
+### :
+            {previousActions}
 
 Based on this context, perform the action as described.
 
@@ -426,5 +462,24 @@ You cannot communicate with the user
                 
             ##Note:
             Never send message to requestor
+            """;
+
+    public static final String SUMMARIZE_ACTION_RESPONSE = """
+            You are given the following context:
+            
+            **Overall Goal:** {goal}
+            
+            **Current Action Description:** {action_description}
+            
+            **Conversation History for This Action:** {action_conv}
+            
+            Based on this, generate a **concise and meaningful summary** that reflects the **progress or result of the current action**, in the context of the overall goal.
+            
+            ### Ensure the response:
+            - Retains and highlights **key information** such as names, entities, times, dates, or other important identifiers.
+            - **Uses the user's name** instead of generic terms like "you", "i", "he", "she".
+            - Is **clear, relevant**, and avoids unnecessary repetition.
+            - **Does not mention the next steps** or future actions—focus only on what has been gathered or completed so far.
+            
             """;
 }

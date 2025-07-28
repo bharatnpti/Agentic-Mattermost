@@ -1,9 +1,7 @@
 package com.example.mattermost.integration.mattermost;
 
-import com.example.mattermost.domain.model.ActionStatus;
-import com.example.mattermost.domain.model.ActiveTask;
-import com.example.mattermost.domain.model.ChannelMapping;
-import com.example.mattermost.domain.model.MessageHistory;
+import com.example.mattermost.domain.CurrentContext;
+import com.example.mattermost.domain.model.*;
 import com.example.mattermost.domain.repository.ActiveTaskRepository;
 import com.example.mattermost.domain.repository.ChannelMappingRepository;
 import com.example.mattermost.domain.repository.MessageHistoryRepository;
@@ -16,9 +14,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 
 import java.util.Collections;
@@ -28,7 +23,7 @@ import java.util.Optional;
 @Service
 public class MattermostService {
 
-    private final static String ownerUserId = "nif1p7emd3yp5kq9tcid8eciay";
+    private final static String ownerUserId = "4bozi1ch8pdi9fowf8j8isbjxh";
 
     private static final Logger log = LoggerFactory.getLogger(MattermostService.class);
     @Autowired
@@ -59,7 +54,7 @@ public class MattermostService {
     @Tool(description = "Send Message to a channel")
     public String sendPersonalMessage(String channelId, String userId, String message, ToolContext toolContext) {
 
-        log.info("Send Message to a channel: {}, {}", channelId, message);
+        log.info("Send Message to a channel: {}, user: {}, message: {}", channelId, userId, message);
         Post post = mattermostApiClient.sendPost(SendPostRequest.builder()
                 .channel_id(channelId)
                 .message(message)
@@ -78,25 +73,39 @@ public class MattermostService {
     }
 
     private void extracted(String channelId, String userId, ToolContext toolContext, Post post) {
+        CurrentContext context = (CurrentContext) toolContext.getContext().get("context");
         String actionId = toolContext.getContext().get("actionId").toString();
         String workflowId = toolContext.getContext().get("workflowId").toString();
         Optional<ActiveTask> byChannelIdAndUserIdAndCurrentActionIdAndWorkflowId = activeTaskRepository.findByChannelIdAndUserIdAndCurrentActionIdAndWorkflowId(channelId, userId, actionId, workflowId);
         log.info("Saving active tasks for channelId: {}, userId: {}", channelId, userId);
         ActiveTask activeTask = byChannelIdAndUserIdAndCurrentActionIdAndWorkflowId.orElseGet(ActiveTask::new);
+        log.info("Retrieved active tasks for channelId: {}, userId: {}, is: {}", channelId, userId, activeTask);
+        log.info("Post Details:  {}", post);
         activeTask.setChannelId(channelId);
         activeTask.setUserId(userId);
         activeTask.setCurrentActionId(actionId);
         activeTask.setWorkflowId(workflowId);
         activeTask.setStatus(ActionStatus.WAITING_FOR_INPUT);
-        activeTask.setThreadRootId(post.getRoot_id());
-        activeTaskRepository.save(activeTask);
+        String rootId = post.getRoot_id();
+        if(rootId == null || rootId.isEmpty()) {
+            rootId = post.getId();
+        }
+        context.setCurrentThreadId(rootId);
+        activeTask.setThreadRootId(rootId);
+        ActiveTask save = activeTaskRepository.save(activeTask);
+        log.info("Saved action : {}", save);
     }
 
-    private void extractedRequestor(String channelId, ToolContext toolContext) {
+    private void extractedRequestor(String channelId, ToolContext toolContext, Post post) {
+        CurrentContext context = (CurrentContext) toolContext.getContext().get("context");
+        String rootId = post.getRoot_id();
+        if(rootId == null || rootId.isEmpty()) {
+            rootId = post.getId();
+        }
+        context.setCurrentThreadId(rootId);
         String userId = toolContext.getContext().get("currentUserId").toString();
         String actionId = toolContext.getContext().get("actionId").toString();
         String workflowId = toolContext.getContext().get("workflowId").toString();
-        String rootId = toolContext.getContext().get("rootId").toString();
         Optional<ActiveTask> byChannelIdAndUserIdAndCurrentActionIdAndWorkflowId = activeTaskRepository.findByChannelIdAndUserIdAndCurrentActionIdAndWorkflowId(channelId, userId, actionId, workflowId);
         log.info("Saving active tasks for channelId: {}, userId: {}, present: {}", channelId, userId, byChannelIdAndUserIdAndCurrentActionIdAndWorkflowId.isPresent());
         ActiveTask activeTask = byChannelIdAndUserIdAndCurrentActionIdAndWorkflowId.orElseGet(ActiveTask::new);
@@ -114,29 +123,27 @@ public class MattermostService {
         String channelId = toolContext.getContext().get("channelId").toString();
         String rootId = toolContext.getContext().get("rootId").toString();
         log.info("Send Message to a Requestor, channelId: {}, rootId: {}, {}", channelId, rootId, message);
-        try {
-            extractedRequestor(channelId, toolContext);
-            MessageHistory messageHistory = new MessageHistory();
-            messageHistory.setMessage("Assistant: " + System.lineSeparator() + message);
-            messageHistory.setChildWorkFlowId(toolContext.getContext().get("workflowId").toString());
-            messageHistory.setUserName("Assistant");
-            messageHistoryRepository.save(messageHistory);
-        } catch (Exception e) {
-            log.error("Error while sending requestor", e);
-        }
-        String mattermostPostResponse = mattermostApiClient.sendPost(SendPostRequest.builder()
+        Post post = mattermostApiClient.sendPost(SendPostRequest.builder()
                 .channel_id(channelId)
                 .message(message)
                 .root_id(rootId)
-                .build()).toString();
+                .build());
+
+        extractedRequestor(channelId, toolContext, post);
+        MessageHistory messageHistory = new MessageHistory();
+        messageHistory.setMessage("Assistant: " + System.lineSeparator() + message);
+        messageHistory.setChildWorkFlowId(toolContext.getContext().get("workflowId").toString());
+        messageHistory.setUserName("Assistant");
+        messageHistoryRepository.save(messageHistory);
+
+        String mattermostPostResponse = post.toString();
         log.info("mattermost response from requestor: {}", mattermostPostResponse);
         return mattermostPostResponse;
     }
 
     @Tool(description = "Create a direct channel with user")
     public MattermostChannel createDirectChannel(String otherUserId) {
-
-
+        log.info("Create a direct channel with user: {}", otherUserId);
         Optional<ChannelMapping> byOwnerUserIdAndOtherUserId = channelMappingRepository.findByOwnerUserIdAndOtherUserId(ownerUserId, otherUserId);
         if (byOwnerUserIdAndOtherUserId.isPresent()) {
             MattermostChannel mattermostChannel = new MattermostChannel();
@@ -171,7 +178,3 @@ public class MattermostService {
     }
 
 }
-
-
-//2025-06-25T20:25:01.878+05:30  INFO 2279 --- [nio-8080-exec-1] c.example.mattermost.WorkflowController  : Received message from channelId: bjh9m1uny7nx9qrttgqfiqndgc, userId: nfe84kf3utrf8gwwcx8kcfnd3a, with content: 'want to schedule a meeting with arun'
-

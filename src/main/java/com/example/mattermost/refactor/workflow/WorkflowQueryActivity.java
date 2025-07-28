@@ -15,5 +15,8 @@ public interface WorkflowQueryActivity {
     
     @ActivityMethod
     ActionStatus queryChildWorkflowActionStatus(String workflowId);
+
+    @ActivityMethod
+    String getActionResponse(String completedActionId);
 }
 

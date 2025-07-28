@@ -106,12 +106,18 @@ public class MattermostApiClient {
         headers.setContentType(MediaType.APPLICATION_JSON);
         HttpEntity<List<String>> entity = new HttpEntity<>(List.of(selfUserId, otherUserId), headers);
 
-        ResponseEntity<MattermostChannel> response = restTemplate.exchange(
+        ResponseEntity<MattermostChannel> response = null;
+        try {
+                response = restTemplate.exchange(
                 url,
                 HttpMethod.POST,
                 entity,
                 MattermostChannel.class
         );
+                } catch (Exception e) {
+            log.error("Error while creating MattermostChannel", e);
+            throw e;
+        }
         return response.getBody();
     }
 

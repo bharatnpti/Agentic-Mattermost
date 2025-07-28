@@ -8,6 +8,7 @@ import com.example.mattermost.integration.mattermost.model.User;
 import com.example.mattermost.refactor.workflow.*;
 import com.example.mattermost.service.GoalExtractionActivity;
 import com.example.mattermost.workflow.MeetingSchedulerWorkflow;
+import com.example.mattermost.workflow.activity.ActiveTaskActivity;
 import com.example.mattermost.workflow.activity.LLMActivity;
 import io.temporal.client.WorkflowClient;
 import io.temporal.client.WorkflowOptions;
@@ -45,10 +46,14 @@ public class WorkflowController {
 
     private LLMActivity llmActivity;
 
+    private ActiveTaskActivity activeTaskActivity;
+
     private MessageHistoryActivityImpl messageHistoryActivityImpl;
 
     private static final String TASK_QUEUE_PARENT = "parent-workflow-queue";
     private static final String TASK_QUEUE_CHILD = "child-workflow-queue";
+
+    public static final String PREFIX = "Meeting_Workflow_";
 
     @Autowired
     public WorkflowController(WorkflowClient workflowClient,
@@ -57,7 +62,8 @@ public class WorkflowController {
                               LLMActivity llmActivity,
                               MattermostService mattermostService,
                               MessageHistoryActivityImpl messageHistoryActivityImpl,
-                              WorkflowQueryActivity workflowQueryActivity) {
+                              WorkflowQueryActivity workflowQueryActivity,
+                              ActiveTaskActivity activeTaskActivity) {
         this.workflowClient = workflowClient;
         this.activeTaskRepository = activeTaskRepository;
         this.goalExtractionActivity = goalExtractionActivity;
@@ -65,6 +71,7 @@ public class WorkflowController {
         this.mattermostService = mattermostService;
         this.messageHistoryActivityImpl = messageHistoryActivityImpl;
         this.workflowQueryActivity = workflowQueryActivity;
+        this.activeTaskActivity = activeTaskActivity;
     }
 
     @PostMapping("/start")
@@ -160,8 +167,9 @@ public class WorkflowController {
                 responsePayload.setChannelId(channelId);
 
                 // Update the active task with the latest interaction
+                activeTask.setStatus(ActionStatus.PROCESSING);
                 activeTask.setLastInteraction(java.time.LocalDateTime.now());
-                activeTaskRepository.save(activeTask);
+//                activeTaskRepository.save(activeTask);
 
                 return handleUserResponse(responsePayload);
 
@@ -227,6 +235,8 @@ public class WorkflowController {
         try {
             List<ActiveTask> existingTask = activeTaskRepository.findByThreadRootId(threadRootId);
 
+            logger.info("existing tasks: {}", existingTask);
+
             if (!existingTask.isEmpty()) {
                 ActiveTask activeTask = existingTask.stream()
                         .filter(task -> task.getStatus() == ActionStatus.WAITING_FOR_INPUT)
@@ -245,14 +255,14 @@ public class WorkflowController {
                 messageHistoryActivityImpl.save(messageHistory);
 
                 // Signal the workflow
-                workflow.onUserResponse(message);
+                workflow.onUserResponse(message, threadRootId, channelId);
 
 
                 // TODO
                 return ResponseEntity.accepted().body(Map.of("workflowId", workflowId));
 
             } else {
-                String workflowId = "Meeting_Workflow_" + threadRootId;
+                String workflowId = PREFIX + threadRootId;
                 logger.info("No active task found for threadId: {}, workflowId: {}", threadRootId, workflowId);
 
                 WorkflowServiceStubs service = WorkflowServiceStubs.newLocalServiceStubs();
@@ -269,7 +279,7 @@ public class WorkflowController {
 
                 Worker childWorker = factory.newWorker(TASK_QUEUE_CHILD);
                 childWorker.registerWorkflowImplementationTypes(ChildWorkflowImpl.class);
-                childWorker.registerActivitiesImplementations(llmActivity, messageHistoryActivityImpl);  // Only llmActivity for child
+                childWorker.registerActivitiesImplementations(llmActivity, messageHistoryActivityImpl, activeTaskActivity);
 
                 factory.start();
                 logger.info("✅ All workers started successfully");

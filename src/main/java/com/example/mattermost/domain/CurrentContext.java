@@ -4,6 +4,9 @@ import com.example.mattermost.domain.model.ActionNode;
 import com.example.mattermost.domain.model.Goal;
 import com.example.mattermost.integration.mattermost.model.User;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 public class CurrentContext {
 
     private Goal goal;
@@ -14,6 +17,9 @@ public class CurrentContext {
     private String currentChannelId;
 
     private User user;
+
+    private Map<String, String> previousActionResponses = new ConcurrentHashMap<>();
+
 
     public CurrentContext() {
     }
@@ -66,6 +72,14 @@ public class CurrentContext {
         this.goal = goal;
     }
 
+    public Map<String, String> getPreviousActionResponses() {
+        return previousActionResponses;
+    }
+
+    public void setPreviousActionResponses(Map<String, String> previousActionResponses) {
+        this.previousActionResponses = previousActionResponses;
+    }
+
     @Override
     public String toString() {
         return "CurrentContext{" +
@@ -73,7 +87,8 @@ public class CurrentContext {
                 ", currentActionNode=" + currentActionNode +
                 ", currentThreadId='" + currentThreadId + '\'' +
                 ", currentChannelId='" + currentChannelId + '\'' +
-                ", currentUserId='" + user.getId() + "-" + user.getUsername() + '\'' +
+                ", user=" + user +
+                ", previousActionResponses=" + previousActionResponses +
                 '}';
     }
 }

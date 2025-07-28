@@ -18,7 +18,7 @@ public interface ChildWorkflowInterface {
     void updateStatus(String status);
 
     @SignalMethod
-    void onUserResponse(String response);
+    void onUserResponse(String response, String threadId, String channelId);
 
     @SignalMethod
     void completeAction();

@@ -40,4 +40,17 @@ public class WorkflowQueryActivityImpl implements WorkflowQueryActivity {
             return ActionStatus.PENDING;
         }
     }
+
+    @Override
+    public String getActionResponse(String completedActionId) {
+        try {
+            log.info("queryChildWorkflowActionStatus: {}", completedActionId);
+            ChildWorkflowInterface childStub = client.newWorkflowStub(
+                    ChildWorkflowInterface.class, completedActionId);
+            return childStub.getActionResponse();
+        } catch (Exception e) {
+            log.error("Error querying workflow {}: {}, {}", completedActionId, e.getMessage(), e);
+            return "";
+        }
+    }
 }

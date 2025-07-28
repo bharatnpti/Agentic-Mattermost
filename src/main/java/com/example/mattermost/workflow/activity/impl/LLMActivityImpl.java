@@ -140,6 +140,7 @@ public class LLMActivityImpl implements LLMActivity {
         if("QUESTION".equalsIgnoreCase(checkAndAskUser) && Objects.equals(messageRequest.getUser().getId(), currentContext.getUser().getId())) {
             actionNode.setActionResponse("BOT: to " + messageRequest.getUser().getUsername() + ": " + messageRequest.getMessage());
             Map<String, Object> toolContext = Map.of(
+                    "context", currentContext,
                     "workflowId", actionNode.getWorkflowId(),
                     "actionId", actionNode.getActionId(),
                     "rootId", currentContext.getCurrentThreadId(),
@@ -151,7 +152,7 @@ public class LLMActivityImpl implements LLMActivity {
                     toolContext1
             );
         } else if("QUESTION".equalsIgnoreCase(checkAndAskUser)) {
-            nlpService.askUser( messageRequest,
+            nlpService.askUser(currentContext, messageRequest,
                     currentContext.getCurrentActionNode(),
                     currentContext.getCurrentThreadId(),
                     currentContext.getCurrentChannelId(),
@@ -171,5 +172,10 @@ public class LLMActivityImpl implements LLMActivity {
 
         return new LLMProcessingResult(true, actionResult, actionStatus);
 
+    }
+
+    @Override
+    public String summarize(CurrentContext context) {
+        return nlpService.summarizeActionResponse(context);
     }
 }

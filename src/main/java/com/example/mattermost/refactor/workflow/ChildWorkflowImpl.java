@@ -3,6 +3,7 @@ package com.example.mattermost.refactor.workflow;
 import com.example.mattermost.domain.CurrentContext;
 import com.example.mattermost.domain.MessageList;
 import com.example.mattermost.domain.model.*;
+import com.example.mattermost.workflow.activity.ActiveTaskActivity;
 import com.example.mattermost.workflow.activity.LLMActivity;
 import io.temporal.activity.ActivityOptions;
 import io.temporal.common.RetryOptions;
@@ -26,6 +27,8 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
     private boolean isCompleted = false;
     private boolean isFailed = false;
     private String failureReason;
+
+    private CurrentContext context;
     private ActionStatus currentActionStatus = ActionStatus.PENDING;
 
     private final CompletablePromise<String> proceedSignal = Workflow.newPromise();
@@ -45,10 +48,13 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
 
     private final LLMActivity llmActivity = Workflow.newActivityStub(LLMActivity.class, defaultActivityOptions);
 
+    private final ActiveTaskActivity activeTaskActivity = Workflow.newActivityStub(ActiveTaskActivity.class, defaultActivityOptions);
+
     private final MessageHistoryActivity messageHistoryActivity = Workflow.newActivityStub(MessageHistoryActivity.class, defaultActivityOptions);
 
     @Override
     public String executeAction(CurrentContext context) {
+        this.context = context;
         log.info("=== CHILD WORKFLOW STARTING ===");
         log.info("executeAction called with context: {}", context);
 
@@ -131,7 +137,7 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
             log.info("Action status set to WAITING_FOR_INPUT: " + context.getCurrentActionNode().getActionId());
 
             String userResponse = proceedSignal.get();
-            log.info("User sent response to signal from handleWaitingForInput: " + userResponse);
+            log.info("User sent response to signal from handleWaitingForInput: {}, context: {}", userResponse, context);
             evaluateAndExecuteAction(context);
 
         } catch (Exception e) {
@@ -188,15 +194,18 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
 
             case AUTOMATED:
                 handleAutomatedAction(context);
+                summarizeResponse(context);
                 break;
 
             case COMPLETED:
-                log.info("Action type is COMPLETED, marking as completed" + context.getCurrentActionNode().getActionId());
+                log.info("Action {} is COMPLETED", context.getCurrentActionNode().getActionId());
                 currentActionStatus = ActionStatus.COMPLETED;
                 actionNode.setActionStatus(ActionStatus.COMPLETED);
                 this.isCompleted = true;
                 updateStatus("Action marked as COMPLETED");
+                summarizeResponse(context);
                 signalParent(context, currentActionStatus, "");
+                activeTaskActivity.updateActiveTask(actionNode.getActionId(), actionType, context.getCurrentActionNode().getWorkflowId(), context.getCurrentChannelId(), context.getUser().getId(), context.getCurrentThreadId());
                 break;
 
             case FAILED:
@@ -205,6 +214,7 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
                 actionNode.setActionStatus(ActionStatus.FAILED);
                 this.isFailed = true;
                 updateStatus("Action marked as FAILED");
+                activeTaskActivity.updateActiveTask(actionNode.getActionId(), actionType, context.getCurrentActionNode().getWorkflowId(), context.getCurrentChannelId(), context.getUser().getId(), context.getCurrentThreadId());
                 throw new RuntimeException("Action type is FAILED");
             default:
                 log.error("Unknown action type: {}, actionId: {}", actionType, context.getCurrentActionNode().getActionId());
@@ -213,8 +223,15 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
                 actionNode.setActionStatus(ActionStatus.FAILED);
                 this.isFailed = true;
                 this.failureReason = "Unknown action type: " + actionType;
+                activeTaskActivity.updateActiveTask(actionNode.getActionId(), actionType, context.getCurrentActionNode().getWorkflowId(), context.getCurrentChannelId(), context.getUser().getId(), context.getCurrentThreadId());
                 throw new RuntimeException("Action type is FAILED");
         }
+
+    }
+
+    private void summarizeResponse(CurrentContext context) {
+        actionResponse = llmActivity.summarize(context);
+        log.info("LLM activity summarized response: {}", actionResponse);
     }
 
     @Override
@@ -226,7 +243,9 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
     }
 
     @Override
-    public void onUserResponse(String response) {
+    public void onUserResponse(String response, String threadId, String channelId) {
+        context.setCurrentThreadId(threadId);
+        context.setCurrentChannelId(channelId);
         this.actionResponse = response;
         updateStatus("Response received: " + response);
         log.info("Action response set: {}", response);
@@ -275,7 +294,7 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
 
     @Override
     public String getActionResponse() {
-        log.debug("getActionResponse returning: {}", actionResponse);
+        log.info("getActionResponse returning: {}", actionResponse);
         return actionResponse;
     }
 

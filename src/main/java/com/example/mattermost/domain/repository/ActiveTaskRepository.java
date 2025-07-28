@@ -23,4 +23,8 @@ public interface ActiveTaskRepository extends org.springframework.data.jpa.repos
     List<ActiveTask> findByThreadRootIdAndUserId(String threadRootId, String userId);
 
     List<ActiveTask> findByThreadRootId(String threadRootId);
+
+    List<ActiveTask> findByWorkflowIdAndCurrentActionIdAndThreadRootId(String workflowId, String actionId, String currentThreadId);
+
+    ActiveTask save(ActiveTask activeTask);
 }

@@ -4,16 +4,12 @@ import com.example.mattermost.domain.model.ActionStatus;
 import com.example.mattermost.domain.model.ActiveTask;
 import com.example.mattermost.domain.repository.ActiveTaskRepository;
 import com.example.mattermost.workflow.activity.ActiveTaskActivity;
-import io.temporal.activity.ActivityInterface;
-import io.temporal.activity.ActivityMethod;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 
 
 @Component
@@ -25,22 +21,31 @@ public class ActiveTaskActivityImpl implements ActiveTaskActivity {
     private ActiveTaskRepository activeTaskRepository;
 
     @Override
-    public void updateActiveTask(String actionId, ActionStatus status, String workflowId, String channelId, String userId) {
-        logger.info("Empty Updating active task for action {}: {}: {}: {}:", actionId, status, channelId, userId);
-        List<ActiveTask> byWorkflowIdAndCurrentActionId = activeTaskRepository.findByWorkflowIdAndCurrentActionId(workflowId, actionId);
+    public void updateActiveTask(String actionId, ActionStatus status, String workflowId, String channelId, String userId, String currentThreadId) {
+        logger.info("updateActiveTask with actionId: {}, status: {}, workflowId: {}, currentThreadId: {}", actionId, status, workflowId, currentThreadId);
+        List<ActiveTask> byWorkflowIdAndCurrentActionId = activeTaskRepository.findByWorkflowIdAndCurrentActionIdAndThreadRootId(workflowId, actionId, currentThreadId);
         ActiveTask activeTask;
         if (!byWorkflowIdAndCurrentActionId.isEmpty()) {
-            byWorkflowIdAndCurrentActionId.forEach(task -> task.setStatus(status));
+            logger.info("Active task already exists: {}", byWorkflowIdAndCurrentActionId);
+            byWorkflowIdAndCurrentActionId.forEach(task -> {
+//                        task.setWorkflowId(workflowId);
+                        task.setStatus(status);
+//                        task.setThreadRootId(currentThreadId);
+                    }
+            );
             byWorkflowIdAndCurrentActionId.forEach(task -> logger.info("updated task list : {}", task.getStatus()));
             activeTaskRepository.saveAll(byWorkflowIdAndCurrentActionId);
         } else {
+            logger.info("No active task exists: {}", byWorkflowIdAndCurrentActionId);
             activeTask = new ActiveTask();
             activeTask.setWorkflowId(workflowId);
             activeTask.setCurrentActionId(actionId);
             activeTask.setStatus(status);
             activeTask.setChannelId(channelId);
             activeTask.setUserId(userId);
-            activeTaskRepository.save(activeTask);
+            activeTask.setThreadRootId(currentThreadId);
+            ActiveTask save = activeTaskRepository.save(activeTask);
+            logger.info("saved active task : {}", save);
         }
 
     }

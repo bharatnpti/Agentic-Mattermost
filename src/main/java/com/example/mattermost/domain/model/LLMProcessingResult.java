@@ -30,4 +30,13 @@ public class LLMProcessingResult {
     public void setActionStatus(ActionStatus actionStatus) {
         this.actionStatus = actionStatus;
     }
+
+    @Override
+    public String toString() {
+        return "LLMProcessingResult{" +
+                "success=" + success +
+                ", actionResult='" + actionResult + '\'' +
+                ", actionStatus=" + actionStatus +
+                '}';
+    }
 }

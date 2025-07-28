@@ -83,4 +83,20 @@ public class ActiveTask {
     public void setThreadRootId(String threadRootId) {
         this.threadRootId = threadRootId;
     }
+
+    @Override
+    public String toString() {
+        return "ActiveTask{" +
+                "id=" + id +
+                ", channelId='" + channelId + '\'' +
+                ", workflowId='" + workflowId + '\'' +
+                ", userId='" + userId + '\'' +
+                ", threadRootId='" + threadRootId + '\'' +
+                ", goal='" + goal + '\'' +
+                ", status=" + status +
+                ", currentActionId='" + currentActionId + '\'' +
+                ", createdAt=" + createdAt +
+                ", lastInteraction=" + lastInteraction +
+                '}';
+    }
 }

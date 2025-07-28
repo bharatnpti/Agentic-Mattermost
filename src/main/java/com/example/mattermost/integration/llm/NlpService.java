@@ -20,9 +20,9 @@ import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -357,7 +357,7 @@ public class NlpService {
         return response.getResult().getOutput().getText();
     }
 
-    public void askUser(MessageRequest messageRequest, ActionNode action, String currentThreadId, String currentChannelId, String currentUserId) {
+    public void askUser(CurrentContext currentContext, MessageRequest messageRequest, ActionNode action, String currentThreadId, String currentChannelId, String currentUserId) {
         PromptTemplate promptTemplate = new PromptTemplate(PromptHolder.MESSAGE_USER);
         BeanOutputConverter<MessageList> messageRequestConverter = new BeanOutputConverter<>(MessageList.class);
         Prompt prompt = promptTemplate.create(Map.of(
@@ -370,6 +370,7 @@ public class NlpService {
         );
 
         Map<String, Object> toolContext = Map.of(
+                "context", currentContext,
                 "workflowId", action.getWorkflowId(),
                 "actionId", action.getActionId(),
                 "rootId", currentThreadId,
@@ -397,19 +398,25 @@ public class NlpService {
         String promptTemplate1 = action.getActionParams().get("prompt_template") == null ? "" : action.getActionParams().get("prompt_template").toString();
         Object requiredFields = action.getActionParams().get("required_fields")  == null ? "" : action.getActionParams().get("required_fields").toString();
         BeanOutputConverter<MessageList> messageRequestConverter = new BeanOutputConverter<>(MessageList.class);
-        Prompt prompt = promptTemplate.create(Map.of("goal", context.getGoal().getGoal(),
-                        "actionName", action.getActionName(),
-                        "actionDescription", action.getActionDescription(),
-                        "prompt_template", promptTemplate1,
-                        "required_fields", requiredFields,
-                        "convHistory", action.getConvHistory(),
-                        "formatInstructions", messageRequestConverter.getFormat(),
-                "userId", context.getUser().getId(),
-                "userName", context.getUser().getUsername()
-                )
+        Map<String, Object> goal = new HashMap<>();
+        goal.put("context", context);
+        goal.put("goal", context.getGoal().getGoal());
+        goal.put("actionName", action.getActionName());
+        goal.put("actionDescription", action.getActionDescription());
+        goal.put("prompt_template", promptTemplate1);
+        goal.put("required_fields", requiredFields);
+        goal.put("convHistory", action.getConvHistory());
+        goal.put("formatInstructions", messageRequestConverter.getFormat());
+        goal.put("userId", context.getUser().getId());
+        goal.put("userName", context.getUser().getUsername());
+        goal.put("previousActions", formatAsBulletPoints(context.getPreviousActionResponses()));
+
+        Prompt prompt = promptTemplate.create(goal
         );
 
         Map<String, Object> toolContext = Map.of(
+                "context", context,
+                "parentWorkflowId", context.getGoal().getWorkflowId(),
                 "workflowId", action.getWorkflowId(),
                 "actionId", action.getActionId(),
                 "rootId", context.getCurrentThreadId(),
@@ -439,11 +446,14 @@ public class NlpService {
         Prompt prompt = promptTemplate.create(
                 Map.of("goal", context.getGoal().getGoal(),
                         "convHistory", action.getConvHistory(),
-                        "action", action
+                        "action", action,
+                        "previousActions", formatAsBulletPoints(context.getPreviousActionResponses())
                 )
         );
 
         Map<String, Object> toolContext = Map.of(
+                "context", context,
+                "parentWorkflowId", context.getGoal().getWorkflowId(),
                 "workflowId", action.getWorkflowId(),
                 "actionId", action.getActionId(),
                 "rootId", context.getCurrentThreadId(),
@@ -470,7 +480,8 @@ public class NlpService {
         Prompt prompt = promptTemplate.create(
                 Map.of("goal", context.getGoal().getGoal(),
                         "result", context.getCurrentActionNode().getConvHistory(),
-                        "action", context.getCurrentActionNode()
+                        "action", context.getCurrentActionNode(),
+                        "previousActions", formatAsBulletPoints(context.getPreviousActionResponses())
                 )
         );
 
@@ -484,4 +495,42 @@ public class NlpService {
         logger.info("determineActionResult Result: {}", chatResponse.getResult().getOutput().getText());
         return ActionStatus.valueOf(chatResponse.getResult().getOutput().getText());
     }
+
+    public String summarizeActionResponse(CurrentContext context) {
+        ActionNode action = context.getCurrentActionNode();
+        PromptTemplate promptTemplate = new PromptTemplate(PromptHolder.SUMMARIZE_ACTION_RESPONSE);
+        Prompt prompt = promptTemplate.create(
+                Map.of("goal", context.getGoal().getGoal(),
+                        "action_description", action.getActionDescription(),
+                        "action_conv", action.getConvHistory()
+                )
+        );
+
+        ChatClient chatClient1 = chatClient.get(openai4_1);
+        chatClient1 = chatClient1.mutate()
+//                .defaultToolCallbacks(toolCallbackProvider.getToolCallbacks())
+//                .defaultTools(internalTools)
+                .build();
+        ChatResponse chatResponse = chatClient1.prompt(prompt).call().chatResponse();
+//        System.out.println("Executing action result: " + chatResponse);
+        String summary = chatResponse.getResult().getOutput().getText();
+        logger.info("summarizeActionResponse Result: {}", summary);
+        return summary;
+    }
+
+    public String formatAsBulletPoints(Map<String, String> previousActionResponses) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("Here are the responses from previously completed actions:\n");
+
+        for (Map.Entry<String, String> entry : previousActionResponses.entrySet()) {
+            builder.append("- Action [")
+                    .append(entry.getKey())
+                    .append("]: ")
+                    .append(entry.getValue())
+                    .append("\n");
+        }
+
+        return builder.toString();
+    }
+
 }
