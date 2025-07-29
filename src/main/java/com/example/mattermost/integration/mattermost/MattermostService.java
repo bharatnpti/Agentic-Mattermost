@@ -23,7 +23,7 @@ import java.util.Optional;
 @Service
 public class MattermostService {
 
-    private final static String ownerUserId = "4bozi1ch8pdi9fowf8j8isbjxh";
+    private static String ownerUserId = "4bozi1ch8pdi9fowf8j8isbjxh";
 
     private static final Logger log = LoggerFactory.getLogger(MattermostService.class);
     @Autowired
@@ -37,6 +37,11 @@ public class MattermostService {
 
     @Autowired
     private MessageHistoryRepository messageHistoryRepository;
+
+    public MattermostService() {
+        ownerUserId = System.getenv("MATTERMOST_BOT_ID");
+        log.debug("Mattermost service initializing with id: {}", ownerUserId);
+    }
 
     @Tool(description = "Get Users List")
     public List<User> getUsersList() {

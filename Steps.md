@@ -74,11 +74,16 @@ Open your browser and navigate to: http://localhost:8065
     - **Copy the bot token** (you'll need this for the next step)
       
    ![Copy Token](img_9.png)
+3. Open http://localhost:8065/api/v4/bots on same browser in which mattermost is open
+   4. Copy the owner_id for the bot created in last step
+      
+         ![img_10.png](img_10.png)
 
 ### 5. Configure Maestro App Environment
 ```bash
 export MATTERMOST_HOST=http://maestro-mattermost:8065/api/v4
 export MATTERMOST_TOKEN={Value from bot token step above}
+export MATTERMOST_BOT_ID={owner_id Value from Bot Account Setup Step 3.4}
 ```
 
 ### 6. Start Maestro App

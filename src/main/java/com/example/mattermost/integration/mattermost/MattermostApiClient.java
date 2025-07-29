@@ -24,11 +24,11 @@ public class MattermostApiClient {
 
     public MattermostApiClient(RestTemplateBuilder restTemplateBuilder) {
         this.restTemplate = restTemplateBuilder.build();
-//        String mattermostHost = System.getenv("MATTERMOST_HOST");
-//        if(mattermostHost != null || !StringUtils.isEmpty(mattermostHost)) {
-//            baseUrl = mattermostHost;
-//        }
-//        bearerToken = System.getenv("MATTERMOST_TOKEN");
+        String mattermostHost = System.getenv("MATTERMOST_HOST");
+        if(mattermostHost != null || !StringUtils.isEmpty(mattermostHost)) {
+            baseUrl = mattermostHost;
+        }
+        bearerToken = System.getenv("MATTERMOST_TOKEN");
         log.info("MattermostApiClient baseUrl: {}, bearerToken: {}", baseUrl, bearerToken);
     }
 
