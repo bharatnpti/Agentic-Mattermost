@@ -485,6 +485,8 @@ public class NlpService {
                 )
         );
 
+        logger.info("Determine Action Result, actionId: {}, prompt: {}", context.getCurrentActionNode().getActionId(), prompt);
+
         ChatClient chatClient1 = chatClient.get(openai4_1);
         chatClient1 = chatClient1.mutate()
 //                .defaultToolCallbacks(toolCallbackProvider.getToolCallbacks())

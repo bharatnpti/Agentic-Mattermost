@@ -167,6 +167,8 @@ public class LLMActivityImpl implements LLMActivity {
         // This is where the NLP service call happens - in the activity, not the workflow
         String actionResult = nlpService.executeAction(context);
 
+        context.getCurrentActionNode().setActionResponse(actionResult);
+
         ActionStatus actionStatus = nlpService.determineActionResult(context);
 
 

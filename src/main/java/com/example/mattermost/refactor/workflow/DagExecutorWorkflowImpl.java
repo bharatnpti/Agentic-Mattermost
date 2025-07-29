@@ -46,8 +46,8 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
         GoalExtractionActivity goalExtractionActivity = Workflow.newActivityStub(
                 GoalExtractionActivity.class,
                 ActivityOptions.newBuilder()
-                        .setStartToCloseTimeout(Duration.ofSeconds(30))
-                        .setScheduleToCloseTimeout(Duration.ofSeconds(60))
+                        .setStartToCloseTimeout(Duration.ofMinutes(5))
+                        .setScheduleToCloseTimeout(Duration.ofMinutes(10))
                         .setRetryOptions(RetryOptions.newBuilder()
                                 .setInitialInterval(Duration.ofSeconds(1))
                                 .setMaximumInterval(Duration.ofSeconds(10))
@@ -98,7 +98,6 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
                     .setWorkflowId(childWorkflowId)
                     .setTaskQueue(TASK_QUEUE_CHILD)
                     .setWorkflowExecutionTimeout(Duration.ofMinutes(120))
-                    .setWorkflowTaskTimeout(Duration.ofMinutes(20))
                     .setWorkflowRunTimeout(Duration.ofMinutes(60))
                     .setRetryOptions(RetryOptions.newBuilder()
                             .setMaximumAttempts(3)
@@ -142,7 +141,7 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
         WorkflowQueryActivity workflowQueryActivity = Workflow.newActivityStub(
                 WorkflowQueryActivity.class,
                 ActivityOptions.newBuilder()
-                        .setStartToCloseTimeout(Duration.ofSeconds(30))
+                        .setStartToCloseTimeout(Duration.ofMinutes(30))
                         .setScheduleToCloseTimeout(Duration.ofSeconds(60))
                         .setRetryOptions(RetryOptions.newBuilder()
                                 .setInitialInterval(Duration.ofSeconds(1))

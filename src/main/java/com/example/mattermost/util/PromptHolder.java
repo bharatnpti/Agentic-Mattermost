@@ -84,7 +84,7 @@ Prioritize creating a lean, efficient DAG by removing transitive dependencies. I
                     Action:
                     {action}
                     
-                    Execution History:
+                    Execution History of current action:
                     {result}
                     
                       ### :
@@ -96,7 +96,7 @@ Prioritize creating a lean, efficient DAG by removing transitive dependencies. I
                     Rules:
                     - If the action needs a user input → return WAITING_FOR_INPUT
                     - If it can be executed without human interaction and no input is required to complete this action -> return AUTOMATED
-                    - If the action was executed successfully with all required fields present → return COMPLETED
+                    - If the action was executed successfully achieving the user's goal → return COMPLETED
                     
                     Return **only** the appropriate ActionStatus enum value based on the above.
                     
