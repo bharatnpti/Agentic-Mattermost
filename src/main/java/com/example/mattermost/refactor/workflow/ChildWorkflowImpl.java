@@ -160,7 +160,12 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
             updateStatus("LLM processing completed with status: " + llmProcessingResult.getActionStatus());
             actionNode.setActionResponse("Action processing latest response: " + llmProcessingResult.getActionResult());
 
-            executeActionByStatus(llmProcessingResult.getActionStatus(), context);
+            ActionStatus actionStatus = llmProcessingResult.getActionStatus();
+            if(actionStatus == ActionStatus.AUTOMATED) {
+                log.info("Force automated action to completed");
+                actionStatus = ActionStatus.FORCED_COMPLETED;
+            }
+            executeActionByStatus(actionStatus, context);
         } catch (Exception e) {
             log.error("Error in handleAutomatedAction: {}", e.getMessage(), e);
             updateStatus("Error in handleAutomatedAction: " + e.getMessage());
@@ -204,6 +209,16 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
                 updateStatus("Action marked as COMPLETED");
                 summarizeResponse(context);
                 signalParent(context, currentActionStatus, "");
+                activeTaskActivity.updateActiveTask(actionNode.getActionId(), actionType, context.getCurrentActionNode().getWorkflowId(), context.getCurrentChannelId(), context.getUser().getId(), context.getCurrentThreadId());
+                break;
+
+            case FORCED_COMPLETED:
+                log.info("Action {} is FORCED_COMPLETED", context.getCurrentActionNode().getActionId());
+                currentActionStatus = ActionStatus.COMPLETED;
+                actionNode.setActionStatus(ActionStatus.COMPLETED);
+                this.isCompleted = true;
+                updateStatus("Action marked as FORCED_COMPLETED");
+                summarizeResponse(context);
                 activeTaskActivity.updateActiveTask(actionNode.getActionId(), actionType, context.getCurrentActionNode().getWorkflowId(), context.getCurrentChannelId(), context.getUser().getId(), context.getCurrentThreadId());
                 break;
 

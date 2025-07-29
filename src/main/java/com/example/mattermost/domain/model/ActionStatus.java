@@ -9,6 +9,8 @@ public enum ActionStatus {
 
     AUTOMATED,
 
+    FORCED_COMPLETED,
+
 
     SKIPPED // If an action cannot be run due to failed dependencies
 }
