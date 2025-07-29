@@ -2,6 +2,10 @@ package com.example.mattermost.config;
 
 import com.example.mattermost.MeetingSchedulerAppMain;
 import com.example.mattermost.refactor.workflow.DagExecutorWorkflowImpl;
+import com.example.mattermost.refactor.workflow.ChildWorkflowImpl;
+import com.example.mattermost.refactor.workflow.MessageHistoryActivityImpl;
+import com.example.mattermost.refactor.workflow.WorkflowQueryActivity;
+import com.example.mattermost.service.GoalExtractionActivity;
 import com.example.mattermost.workflow.activity.ActiveTaskActivity;
 import com.example.mattermost.workflow.activity.impl.AskUserActivityImpl;
 import com.example.mattermost.workflow.activity.impl.LLMActivityImpl;
@@ -14,6 +18,7 @@ import io.temporal.worker.WorkerFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -23,8 +28,10 @@ public class TemporalConfig {
     private static final Logger logger = LoggerFactory.getLogger(TemporalConfig.class);
 
     // Using constants from MeetingSchedulerAppMain, consider moving them to application properties
-    private static final String TEMPORAL_SERVICE_ADDRESS = MeetingSchedulerAppMain.TEMPORAL_SERVICE_ADDRESS;
     private static final String TASK_QUEUE = MeetingSchedulerAppMain.TASK_QUEUE;
+
+    @Value("${temporal.service.address:#{null}}")
+    private String temporalServiceAddressProperty;
 
     @Autowired
     private LLMActivityImpl llmActivity;
@@ -32,16 +39,21 @@ public class TemporalConfig {
     @Autowired
     private ActiveTaskActivity activeTaskActivity;
 
-//    @Autowired
-//    private WorkerFactory workerFactory;
-
     @Bean
     public WorkflowServiceStubs workflowServiceStubs() {
-        String temporalServiceAddress = System.getenv("TEMPORAL_SERVICE_ADDRESS");
-        logger.info("temporalServiceAddress is : {}", temporalServiceAddress);
-        if(temporalServiceAddress == null || temporalServiceAddress.isEmpty()) {
-            temporalServiceAddress = TEMPORAL_SERVICE_ADDRESS;
+        // Priority: application property -> environment variable -> default
+        String temporalServiceAddress = temporalServiceAddressProperty;
+
+        if (temporalServiceAddress == null || temporalServiceAddress.isEmpty()) {
+            temporalServiceAddress = System.getenv("TEMPORAL_SERVICE_ADDRESS");
         }
+
+        if (temporalServiceAddress == null || temporalServiceAddress.isEmpty()) {
+            temporalServiceAddress = MeetingSchedulerAppMain.TEMPORAL_SERVICE_ADDRESS;
+        }
+
+        logger.info("temporalServiceAddress is : {}", temporalServiceAddress);
+
         WorkflowServiceStubsOptions options = WorkflowServiceStubsOptions.newBuilder()
                 .setTarget(temporalServiceAddress)
                 .build();
@@ -62,24 +74,45 @@ public class TemporalConfig {
     }
 
     @Bean
-    public Worker startWorkerFactory(WorkerFactory workerFactory) {
+    public Worker startWorkerFactory(WorkerFactory workerFactory,
+                                     GoalExtractionActivity goalExtractionActivity,
+                                     WorkflowQueryActivity workflowQueryActivity,
+                                     MessageHistoryActivityImpl messageHistoryActivityImpl) {
         logger.info("Starting Temporal Worker Factory and registering components...");
-        Worker worker = workerFactory.newWorker(TASK_QUEUE);
 
-        // Register Workflow Implementation
-        worker.registerWorkflowImplementationTypes(DagExecutorWorkflowImpl.class);
-        logger.info("Registered workflow implementation: {}", DagExecutorWorkflowImpl.class.getName());
+        // Register the original worker for TASK_QUEUE
+        Worker mainWorker = workerFactory.newWorker(TASK_QUEUE);
+        mainWorker.registerWorkflowImplementationTypes(DagExecutorWorkflowImpl.class);
+        mainWorker.registerActivitiesImplementations(
+                new AskUserActivityImpl(),
+                new ValidateInputActivityImpl(),
+                llmActivity,
+                activeTaskActivity
+        );
+        logger.info("Registered main worker for task queue: {}", TASK_QUEUE);
 
-        // Register Activity Implementations
-        // Assuming AskUserActivityImpl and ValidateInputActivityImpl will be Spring beans
-        // or instantiated directly if not. For now, direct instantiation.
-        // If these were Spring beans, they could be @Autowired into this class.
-        worker.registerActivitiesImplementations(new AskUserActivityImpl(), new ValidateInputActivityImpl(), llmActivity, activeTaskActivity);
-        logger.info("Registered activity implementations: {}, {}", AskUserActivityImpl.class.getName(), ValidateInputActivityImpl.class.getName());
+        // Register parent workflow worker
+        Worker parentWorker = workerFactory.newWorker("parent-workflow-queue");
+        parentWorker.registerWorkflowImplementationTypes(DagExecutorWorkflowImpl.class);
+        parentWorker.registerActivitiesImplementations(
+                goalExtractionActivity,
+                workflowQueryActivity
+        );
+        logger.info("Registered parent worker for task queue: parent-workflow-queue");
+
+        // Register child workflow worker
+        Worker childWorker = workerFactory.newWorker("child-workflow-queue");
+        childWorker.registerWorkflowImplementationTypes(ChildWorkflowImpl.class);
+        childWorker.registerActivitiesImplementations(
+                llmActivity,
+                messageHistoryActivityImpl,
+                activeTaskActivity
+        );
+        logger.info("Registered child worker for task queue: child-workflow-queue");
 
         // Start the worker factory. This effectively starts all configured workers.
         workerFactory.start();
-        logger.info("Temporal WorkerFactory started for task queue: {}", TASK_QUEUE);
-        return worker;
+        logger.info("Temporal WorkerFactory started with all workers");
+        return mainWorker;
     }
 }

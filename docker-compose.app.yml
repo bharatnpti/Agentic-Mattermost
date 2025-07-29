@@ -12,7 +12,7 @@ services:
       - MATTERMOST_HOST=${MATTERMOST_HOST:-dummyHost}
       - MATTERMOST_TOKEN=${MATTERMOST_TOKEN:-dummyToken}
       - MATTERMOST_BOT_ID=${MATTERMOST_BOT_ID:-dummyBotId}
-      - TEMPORAL_SERVICE_ADDRESS=temporal:7233
+      - TEMPORAL_SERVICE_ADDRESS=maestro-temporal:7233
       - SPRING_PROFILES_ACTIVE=dev
     ports:
       - "8080:8080"
