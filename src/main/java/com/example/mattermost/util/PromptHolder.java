@@ -414,6 +414,9 @@ You cannot communicate with the user
                 Action Name: {actionName}
                 Action Description: {actionDescription}
                 ```
+              
+              * **Current Action Conversation History:**
+                {convHistory}
             
             ### Instructions:
             
@@ -421,7 +424,7 @@ You cannot communicate with the user
             
                   * Look for explicit questions, interrogative phrases, or keywords that indicate a query or a need for user input (e.g., "What is...", "Can you confirm...", "Please provide...", "Do you want...", question marks).
                   * Identify phrases that suggest a call to action requiring a user response or decision.
-                  * Conversely, identify phrases that primarily convey information, status updates, or notifications without an explicit demand for interaction (e.g., "Your request has been processed.", "The status is now...", "We have completed...", "For your information...").
+                  * Conversely, identify phrases that primarily convey information, status updates, or notifications. (e.g., "Your request has been processed.", "The status is now...", "We have completed...", "For your information...").
             
             2.  **Evaluate the `Current Action Details`:**
             
@@ -433,35 +436,42 @@ You cannot communicate with the user
             Return one of the following labels:
             
               * **"QUESTION"**: If, based on the message content and the action's purpose, the `message` is clearly seeking information, a decision, or confirmation from the user.
-              * **"NOTIFICATION"**: If, based on the message content and the action's purpose, the `message` is informing the user about a status, an event, or a completed step, without explicitly requiring an immediate response to continue the process.
+              * **"NOTIFICATION"**: If, based on the message content and the action's purpose, the `message` is informing the user about a status, an event, or a completed step.
             
             -----
             
             """;
     public static final String MESSAGE_USER = """
-            
-            Your task is to communicate with the user and send him the message.
-            
-            ##Message to sent to user-
-            {message}
-            
-            ##User identifier to whom message has to be sent-
-            {user}
-            
-            ##User(requestor) who has initiated the request-
-            {requestor}
-            
-            Instructions:.
-            - Use the available tools to send the generated message to the user.
-            - To send a message to any user other than requestor:
-                1. use getUsersList to fetch the list of users.
-                2. find the id of user.
-                3. use id of user to create a direct channel using createDirectChannel.
-                4. use sendPersonalMessage to send the message to that channel.
-                5. use updateAction to update the details of the action - use the channelId obtained in step 3.
-                
-            ##Note:
-            Never send message to requestor
+Your task is to communicate with the designated user by sending them a message.
+
+---
+
+## Message to be sent:
+{message}
+
+## Designated recipient (user to send the message to):
+{user}
+
+## Requestor (the user who initiated this request):
+{requestor}
+
+---
+
+## Conversation history:
+{convHistory}
+
+---
+
+### Instructions:
+- **Crucially, the message must ONLY be sent to the designated recipient ({user}).**
+- **Under NO circumstances should the message be sent to the requestor ({requestor}).**
+- Use the available tools to send the generated message to the designated recipient.
+- To send a message to the designated recipient:
+    1. Use `getUsersList` to fetch the list of users.
+    2. Find the ID of the designated recipient.
+    3. Use the recipient's ID to create a direct channel using `createDirectChannel`.
+    4. Use `sendPersonalMessage` to send the message to that channel.
+    5. Use `updateAction` to update the details of the action, using the `channelId` obtained in step 3.
             """;
 
     public static final String SUMMARIZE_ACTION_RESPONSE = """

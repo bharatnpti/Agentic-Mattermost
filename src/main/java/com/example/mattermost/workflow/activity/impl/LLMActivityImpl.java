@@ -102,7 +102,7 @@ public class LLMActivityImpl implements LLMActivity {
     public MessageList formulate_user_message(CurrentContext context) {
 
         MessageList askUser = nlpService.formulate_user_message(context);
-        logger.info("Ask user: {}", askUser);
+        logger.info("formulate_user_message response: {}", askUser);
         return askUser;
     }
 
@@ -136,6 +136,7 @@ public class LLMActivityImpl implements LLMActivity {
     @Override
     public String checkAndAskUser(MessageRequest messageRequest, CurrentContext currentContext) {
         String checkAndAskUser = nlpService.checkAndAskUser(messageRequest, currentContext);
+        logger.info("Ask user: {}, messageRequest: {}", checkAndAskUser, messageRequest);
         ActionNode actionNode = currentContext.getCurrentActionNode();
         if("QUESTION".equalsIgnoreCase(checkAndAskUser) && Objects.equals(messageRequest.getUser().getId(), currentContext.getUser().getId())) {
             actionNode.setActionResponse("BOT: to " + messageRequest.getUser().getUsername() + ": " + messageRequest.getMessage());
@@ -152,6 +153,7 @@ public class LLMActivityImpl implements LLMActivity {
                     toolContext1
             );
         } else if("QUESTION".equalsIgnoreCase(checkAndAskUser)) {
+            actionNode.setActionResponse("BOT: to " + messageRequest.getUser().getUsername() + ": " + messageRequest.getMessage());
             nlpService.askUser(currentContext, messageRequest,
                     currentContext.getCurrentActionNode(),
                     currentContext.getCurrentThreadId(),

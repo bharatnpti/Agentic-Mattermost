@@ -77,10 +77,20 @@ public class MattermostService {
         return post.toString();
     }
 
+    private Object getFromToolContext(ToolContext toolContext, String id) {
+        Object obj = null;
+        try {
+            obj = toolContext.getContext().get(id);
+        } catch (Exception e) {
+            log.error("Error while getting Object from ToolContext: {}", id, e);
+        }
+        return obj;
+    }
+
     private void extracted(String channelId, String userId, ToolContext toolContext, Post post) {
-        CurrentContext context = (CurrentContext) toolContext.getContext().get("context");
-        String actionId = toolContext.getContext().get("actionId").toString();
-        String workflowId = toolContext.getContext().get("workflowId").toString();
+        CurrentContext context = (CurrentContext) getFromToolContext(toolContext, "context");
+        String actionId = getFromToolContext(toolContext, "actionId").toString();
+        String workflowId = getFromToolContext(toolContext, "workflowId").toString();
         Optional<ActiveTask> byChannelIdAndUserIdAndCurrentActionIdAndWorkflowId = activeTaskRepository.findByChannelIdAndUserIdAndCurrentActionIdAndWorkflowId(channelId, userId, actionId, workflowId);
         log.info("Saving active tasks for channelId: {}, userId: {}", channelId, userId);
         ActiveTask activeTask = byChannelIdAndUserIdAndCurrentActionIdAndWorkflowId.orElseGet(ActiveTask::new);
@@ -102,15 +112,15 @@ public class MattermostService {
     }
 
     private void extractedRequestor(String channelId, ToolContext toolContext, Post post) {
-        CurrentContext context = (CurrentContext) toolContext.getContext().get("context");
+        CurrentContext context = (CurrentContext) getFromToolContext(toolContext, "context");
         String rootId = post.getRoot_id();
         if(rootId == null || rootId.isEmpty()) {
             rootId = post.getId();
         }
         context.setCurrentThreadId(rootId);
-        String userId = toolContext.getContext().get("currentUserId").toString();
-        String actionId = toolContext.getContext().get("actionId").toString();
-        String workflowId = toolContext.getContext().get("workflowId").toString();
+        String userId = getFromToolContext(toolContext, "currentUserId").toString();
+        String actionId = getFromToolContext(toolContext, "actionId").toString();
+        String workflowId = getFromToolContext(toolContext, "workflowId").toString();
         Optional<ActiveTask> byChannelIdAndUserIdAndCurrentActionIdAndWorkflowId = activeTaskRepository.findByChannelIdAndUserIdAndCurrentActionIdAndWorkflowId(channelId, userId, actionId, workflowId);
         log.info("Saving active tasks for channelId: {}, userId: {}, present: {}", channelId, userId, byChannelIdAndUserIdAndCurrentActionIdAndWorkflowId.isPresent());
         ActiveTask activeTask = byChannelIdAndUserIdAndCurrentActionIdAndWorkflowId.orElseGet(ActiveTask::new);
@@ -123,10 +133,10 @@ public class MattermostService {
         activeTaskRepository.save(activeTask);
     }
 
-    @Tool(description = "Reply or ask requestor")
+//    @Tool(description = "Reply or ask requestor")
     public String askRequestor(String message, ToolContext toolContext) {
-        String channelId = toolContext.getContext().get("channelId").toString();
-        String rootId = toolContext.getContext().get("rootId").toString();
+        String channelId = getFromToolContext(toolContext, "channelId").toString();
+        String rootId = getFromToolContext(toolContext, "rootId").toString();
         log.info("Send Message to a Requestor, channelId: {}, rootId: {}, {}", channelId, rootId, message);
         Post post = mattermostApiClient.sendPost(SendPostRequest.builder()
                 .channel_id(channelId)
@@ -137,7 +147,7 @@ public class MattermostService {
         extractedRequestor(channelId, toolContext, post);
         MessageHistory messageHistory = new MessageHistory();
         messageHistory.setMessage("Assistant: " + System.lineSeparator() + message);
-        messageHistory.setChildWorkFlowId(toolContext.getContext().get("workflowId").toString());
+        messageHistory.setChildWorkFlowId(getFromToolContext(toolContext, "workflowId").toString());
         messageHistory.setUserName("Assistant");
         messageHistoryRepository.save(messageHistory);
 

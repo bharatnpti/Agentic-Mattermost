@@ -136,7 +136,7 @@ public class ChildWorkflowImpl implements ChildWorkflowInterface {
             log.info("Action status set to WAITING_FOR_INPUT: " + context.getCurrentActionNode().getActionId());
 
             String userResponse = proceedSignal.get();
-            log.info("User sent response to signal from handleWaitingForInput: {}, context: {}", userResponse, context);
+            log.info("User sent response to signal from handleWaitingForInput: {}, getCurrentActionNode: {}", userResponse, context.getCurrentActionNode());
             evaluateAndExecuteAction(context);
 
         } catch (Exception e) {

@@ -96,6 +96,18 @@ public class WorkflowController {
                         .orElseThrow();
                 String workflowId = activeTask.getWorkflowId();
 
+                ActionStatus actionStatus = null;
+                try {
+                     actionStatus = workflowQueryActivity.queryChildWorkflowActionStatus(workflowId);
+                } catch (Exception e) {
+                    logger.error("Swallowed: Failed to query workflow status for workflowId: {}", workflowId, e);
+                }
+
+                if(actionStatus == null || ActionStatus.COMPLETED.equals(actionStatus) || ActionStatus.FORCED_COMPLETED.equals(actionStatus) || ActionStatus.FAILED.equals(actionStatus)) {
+                    logger.info("Workflow cannot be started as status is: {}: {}", actionStatus, workflowId);
+                    return ResponseEntity.status(HttpStatus.IM_USED).body(Map.of("workflowId", workflowId));
+                }
+
                 // Use the existing Spring-managed WorkflowClient
                 ChildWorkflowInterface workflow = workflowClient.newWorkflowStub(ChildWorkflowInterface.class, workflowId);
 

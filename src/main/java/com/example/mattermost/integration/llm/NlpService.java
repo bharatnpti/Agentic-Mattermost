@@ -73,7 +73,7 @@ public class NlpService {
 
         ChatClient openAi4_1Client = ChatClient.builder(baseOpenAiChatModel.mutate().defaultOptions(OpenAiChatOptions.builder()
                         .model("o4-mini-2025-04-16").build()).build())
-                .defaultAdvisors(new SimpleLoggerAdvisor())
+//                .defaultAdvisors(new SimpleLoggerAdvisor())
                 .build();
 
 
@@ -192,7 +192,7 @@ public class NlpService {
         ChatClient chatClient1 = chatClient.get(openai4_1);
         chatClient1 = chatClient1.mutate()
                 .defaultToolCallbacks(ToolCallbacks.from(meetingInviteTool))
-                .defaultAdvisors(new SimpleLoggerAdvisor())
+//                .defaultAdvisors(new SimpleLoggerAdvisor())
 //                .defaultTools(mattermostService)
                 .defaultToolContext(toolContext)
                 .build();
@@ -325,7 +325,7 @@ public class NlpService {
 //                    .tools(mattermostService)
                     .toolContext(toolContext)
                     .call().chatResponse();
-            logger.info("ask_user Result: {}", response.getResult().getOutput().getText());
+            logger.info("formulate_user_message Result: {}", response.getResult().getOutput().getText());
             return messageRequestConverter.convert(response.getResult().getOutput().getText());
         } catch (Exception e) {
             logger.error("Error calling LLM for action creation: {}", e.getMessage(), e);
@@ -350,7 +350,8 @@ public class NlpService {
         PromptTemplate promptTemplate = new PromptTemplate(PromptHolder.CHECK_AND_ASK_USER);
         Prompt prompt = promptTemplate.create(Map.of("messageRequest", messageRequest.getMessage(),
                 "actionName", action.getActionName(),
-                "actionDescription", action.getActionDescription()
+                "actionDescription", action.getActionDescription(),
+                "convHistory", context.getCurrentActionNode().getConvHistory()
         ));
         ChatClient chatClient1 = chatClient.get(openai4_1);
         ChatResponse response = chatClient1.prompt(prompt).call().chatResponse();
@@ -358,6 +359,7 @@ public class NlpService {
     }
 
     public void askUser(CurrentContext currentContext, MessageRequest messageRequest, ActionNode action, String currentThreadId, String currentChannelId, String currentUserId) {
+        logger.info("askUser messageRequest: {}", messageRequest);
         PromptTemplate promptTemplate = new PromptTemplate(PromptHolder.MESSAGE_USER);
         BeanOutputConverter<MessageList> messageRequestConverter = new BeanOutputConverter<>(MessageList.class);
         Prompt prompt = promptTemplate.create(Map.of(
@@ -365,7 +367,8 @@ public class NlpService {
                         "user", messageRequest.getUser(),
                 "threadId", currentThreadId,
                 "requestor", currentUserId,
-                "channelId", currentChannelId
+                "channelId", currentChannelId,
+                "convHistory", currentContext.getCurrentActionNode().getConvHistory()
                 )
         );
 
@@ -432,7 +435,7 @@ public class NlpService {
 //                    .tools(mattermostService)
                     .toolContext(toolContext)
                     .call().chatResponse();
-            logger.info("ask_user Result: {}", response.getResult().getOutput().getText());
+            logger.info("formulate_user_message: Result: {}", response.getResult().getOutput().getText());
             return messageRequestConverter.convert(response.getResult().getOutput().getText());
         } catch (Exception e) {
             logger.error("Error calling LLM for action creation: {}", e.getMessage(), e);
@@ -464,7 +467,7 @@ public class NlpService {
         ChatClient chatClient1 = chatClient.get(openai4_1);
         chatClient1 = chatClient1.mutate()
                 .defaultToolCallbacks(ToolCallbacks.from(meetingInviteTool))
-                .defaultAdvisors(new SimpleLoggerAdvisor())
+//                .defaultAdvisors(new SimpleLoggerAdvisor())
 //                .defaultTools(mattermostService)
                 .defaultToolContext(toolContext)
                 .build();

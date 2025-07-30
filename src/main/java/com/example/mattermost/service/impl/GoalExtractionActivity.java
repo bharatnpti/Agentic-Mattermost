@@ -25,7 +25,6 @@ public class GoalExtractionActivity implements com.example.mattermost.service.Go
     public Goal extractGoalFromMessage(String message) throws RuntimeException {
         log.info("Goal extraction activity started");
         Goal goal = nlpService.createActions(message, null);
-        log.info("Extracted goal from NLP message: {}", goal);
         return goal;
     }
 

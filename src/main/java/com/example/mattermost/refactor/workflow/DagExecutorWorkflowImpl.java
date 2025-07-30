@@ -168,35 +168,35 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
                 continue;
             }
 
-//            ActionStatus actionStatus = workflowQueryActivity.queryChildWorkflowActionStatus(node.getWorkflowId());
-//
-//            // Update status tracking based on current status
-//            if (ActionStatus.COMPLETED == actionStatus) {
-//                if (!completed.contains(actionId)) {
-//                    completed.add(actionId);
-//                    inProgress.remove(actionId);
-//                    childStatuses.put(actionId, ActionStatus.COMPLETED);
-//                    log.info("Action {} marked as completed via query", actionId);
-//                    progressMade = true;
-//                }
-//                continue;
-//            } else if (ActionStatus.FAILED == actionStatus) {
-//                if (!failed.contains(actionId)) {
-//                    failed.add(actionId);
-//                    inProgress.remove(actionId);
-//                    childStatuses.put(actionId, ActionStatus.FAILED);
-//                    log.info("Action {} marked as failed via query", actionId);
-//                    progressMade = true;
-//                }
-//                continue;
-//            } else if (ActionStatus.PROCESSING == actionStatus) {
-//                if (!inProgress.contains(actionId)) {
-//                    inProgress.add(actionId);
-//                    childStatuses.put(actionId, ActionStatus.PROCESSING);
-//                    log.info("Action {} is processing", actionId);
-//                }
-//                continue;
-//            }
+            ActionStatus actionStatus = workflowQueryActivity.queryChildWorkflowActionStatus(node.getWorkflowId());
+
+            // Update status tracking based on current status
+            if (ActionStatus.COMPLETED == actionStatus) {
+                if (!completed.contains(actionId)) {
+                    completed.add(actionId);
+                    inProgress.remove(actionId);
+                    childStatuses.put(actionId, ActionStatus.COMPLETED);
+                    log.info("Action {} marked as completed via query", actionId);
+                    progressMade = true;
+                }
+                continue;
+            } else if (ActionStatus.FAILED == actionStatus) {
+                if (!failed.contains(actionId)) {
+                    failed.add(actionId);
+                    inProgress.remove(actionId);
+                    childStatuses.put(actionId, ActionStatus.FAILED);
+                    log.info("Action {} marked as failed via query", actionId);
+                    progressMade = true;
+                }
+                continue;
+            } else if (ActionStatus.PROCESSING == actionStatus) {
+                if (!inProgress.contains(actionId)) {
+                    inProgress.add(actionId);
+                    childStatuses.put(actionId, ActionStatus.PROCESSING);
+                    log.info("Action {} is processing", actionId);
+                }
+                continue;
+            }
 
             // Check if all dependencies are satisfied
             Set<String> deps = dependencies.getOrDefault(actionId, Collections.emptySet());
@@ -231,8 +231,8 @@ public class DagExecutorWorkflowImpl implements DagExecutorWorkflow {
                     String completedWorkflowId = context.getGoal().getNodeById(completedNodeId).getWorkflowId();
 //                    ChildWorkflowInterface completedChild = childWorkflows.get(completedWorkflowId);
                     try {
-                        ActionStatus actionStatus = workflowQueryActivity.queryChildWorkflowActionStatus(completedWorkflowId);
-                        log.info("Action with status: {} {}", completedWorkflowId, actionStatus);
+                        ActionStatus actionStatus2 = workflowQueryActivity.queryChildWorkflowActionStatus(completedWorkflowId);
+                        log.info("Action with status: {} {}", completedWorkflowId, actionStatus2);
                         String response = workflowQueryActivity.getActionResponse(completedWorkflowId);
                         completedResponses.put(completedNodeId, response);
                     } catch (Exception e) {
